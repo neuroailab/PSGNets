@@ -1,0 +1,969 @@
+import copy
+import pdb
+
+import numpy as np
+import tensorflow.compat.v1 as tf
+import vvn.ops.convolutional as convolutional
+import vvn.ops.graphical as graphical
+import vvn.ops.pooling as pooling
+import vvn.ops.vectorizing as vectorizing
+import vvn.ops.rendering as rendering
+import vvn.ops.utils as utils
+import vvn.models.losses as losses
+from vvn.ops.dimensions import DimensionDict, OrderedDict
+
+from vvn.models.levels import *
+
+## flood filling
+from vvn.models.grnn.graph_rnn import graph_rnn_constructor
+
+PRINT = True
+
+class EdgeWarpDiffP1Level(DiffP1Level, P1Level):
+
+    def __init__(self, use_gcn=True, **kwargs):
+
+        self.gcn_estimator = use_gcn
+        super(EdgeWarpDiffP1Level, self).__init__(**kwargs)
+
+    def reshape_inputs(self, **kwargs):
+
+        if self.gcn_estimator:
+            DiffP1Level.reshape_inputs(self, **kwargs)
+        else:
+            P1Level.reshape_inputs(self, **kwargs)
+            def backbone(nodes, adj):
+                return tf.stop_gradient(nodes)
+            self.backbone = backbone
+
+    def compute_edge_probability(self, x):
+        '''
+        predict whether each position is an edge
+
+        x: [BT,N,D]
+        '''
+        x = tf.reshape(x, [self.BT] + self.size + [-1])
+
+        edge_feats_key = self.estimator_kwargs.get('edge_feats_key', None)
+        if edge_feats_key is not None:
+            feats = self.actions[edge_feats_key]
+            imsize = feats.shape.as_list()[-3:-1]
+            strides = [imsize[0] // self.size[0], imsize[1] // self.size[1]]
+            feats = feats[...,::strides[0],::strides[1],:]
+            x = tf.concat([x, feats], axis=-1)
+
+        if self.estimator_kwargs.get('sobel_feats', False):
+            sobel_feats = self.compute_sobel_edge_target(
+                sobel_images_key='images', return_feats=True)
+            x = tf.concat([x, self.reshape_batch_time(sobel_feats, merge=True)], axis=-1)
+
+        if self.estimator_kwargs.get('stop_gradient_features', False):
+            x = tf.stop_gradient(x)
+
+        with tf.variable_scope('edge_predictor_conv'):
+            edge_prob = convolutional.conv(x, out_depth=1, train=self.is_training, padding='SAME',
+                                           activation=None, **self.estimator_kwargs)
+
+            if False:
+                edge_prob = tf.Print(edge_prob, [tf.reduce_min(edge_prob), tf.reduce_max(edge_prob)], message='edge_prob_minmax')
+            edge_prob = tf.nn.sigmoid(edge_prob[...,0])
+            if False:
+                edge_prob = tf.Print(edge_prob, [tf.reduce_min(edge_prob), tf.reduce_max(edge_prob)], message='edge_prob_minmax_sig')
+
+        return edge_prob
+
+    @staticmethod
+    def compute_next_adjacency_from_features(features, k=1, backward=True, metric=graphical.euclidean_dist2, metric_kwargs={'thresh':'local'}):
+        '''
+        Compute a typical adjacency matrix/affinities, except between features at time t and t+1
+        '''
+        B,T,H,W,C = features.shape.as_list()
+
+        future_neighbors = graphical.compute_adjacency_from_features(
+            features=tf.reshape(features[:,:-1] if backward else features[:,1:], [B*(T-1),H,W,C]),
+            k=k, return_neighbors=True, extract_patches=True)
+
+        nodes = tf.reshape(features[:,1:] if backward else features[:,:-1], [B*(T-1),H*W,C,1])
+        future_affinities, thresh = metric(
+            nodes, future_neighbors, return_affinities=True, **metric_kwargs)
+        future_adj = (1. / future_affinities) < thresh
+
+        future_affinities = tf.reshape(future_affinities, [B,T-1,H,W,-1])
+        future_adj = tf.reshape(future_adj, [B,T-1,H,W,-1])
+        return future_affinities, future_adj
+
+    def compute_warping_loss(self, edge_prob):
+
+        edge_prob = tf.stop_gradient(1.0 - edge_prob) # edges are high
+
+        ## set up inputs
+        assert self.T > 1, self.T
+        time_feats_key = self.estimator_kwargs.get('time_feats_key', 'delta_rgb')
+        if time_feats_key == 'features':
+            time_feats = self.features
+        else:
+            time_feats = self.actions[time_feats_key]
+            imsize = time_feats.shape.as_list()[-3:-1]
+            strides = [imsize[0] // self.size[0], imsize[1] // self.size[1]]
+            time_feats = time_feats[...,::strides[0],::strides[1],:]
+
+        time_feats = tf.concat([time_feats, edge_prob[...,tf.newaxis]], axis=-1)
+        time_feats = self.reshape_batch_time(time_feats, merge=False) # [B,T,H,W,C]
+        time_feats = [tf.zeros_like(time_feats[:,0:1])] + tf.split(time_feats, self.T, axis=1) # len T+1
+        warp_input = []
+        for t in range(self.T):
+            warp_inp = tf.concat([time_feats[t], time_feats[t+1]], axis=-1) # [B,H,W,2C]
+            warp_input.append(warp_inp)
+        warp_input = tf.stack(warp_input, axis=1) # [B,T,H,W,2C]
+        warp_input = tf.reshape(warp_input, [self.BT] + self.size + [-1])
+
+        with tf.variable_scope('warp_predictor_conv'):
+            warp_ksize = self.estimator_kwargs.get('warp_ksize', [7,7])
+            warp_preds = convolutional.conv(warp_input, out_depth=np.prod(warp_ksize),
+                                            ksize=warp_ksize, activation=None,
+                                            train=self.is_training, padding='SAME')
+            if self.estimator_kwargs.get('warp_softmax', False):
+                warp_preds = tf.nn.softmax(warp_preds, axis=-1) # motion should add up to 1.0
+            else:
+                warp_preds = tf.nn.sigmoid(warp_preds) # motion doesn't add up to 1.0
+            warp_sums = tf.maximum(tf.reduce_sum(warp_preds, axis=-1, keepdims=True), 1e-8)
+            warp_sums = self.reshape_batch_time(warp_sums, merge=False)
+            if PRINT:
+                warp_sums = tf.Print(warp_sums, [tf.reduce_mean(warp_sums)], message='warp_sums')
+
+        # warp edge px and compute loss
+        wethresh = 1.0 - tf.cast(self.estimator_kwargs.get('warp_edge_thresh', 0.5), tf.float32)
+        edge_px = tf.cast(edge_prob[...,tf.newaxis] > wethresh, tf.float32) # [BT,H,W,1]
+        self.edge_mask = edge_px
+        warped_edges = tf.image.extract_patches(
+            edge_px,
+            sizes=([1]+warp_ksize+[1]),
+            strides=[1,1,1,1],
+            rates=[1,1,1,1],
+            padding='SAME'
+        ) # [BT,H,W,warp_k**2]
+
+        # apply warps from time 1,...,T-1 to edges
+        warped_edges = self.reshape_batch_time(warped_edges, merge=False)
+        warp_preds = self.reshape_batch_time(warp_preds, merge=False)
+        edge_px = self.reshape_batch_time(edge_px, merge=False)
+
+        warped_edges = tf.reduce_sum(warped_edges[:,:-1] * warp_preds[:,1:], axis=-1, keepdims=True) / warp_sums[:,1:]
+        if self.estimator_kwargs.get('cross_entropy_warp_loss', False):
+            warp_loss = losses.cross_entropy(logits=warped_edges, labels=edge_px[:,1:])
+        else:
+            warp_loss = tf.square(warped_edges - edge_px[:,1:]) # [B,T-1,H,W,1]
+
+        if self.estimator_kwargs.get('warp_affinities_loss_scale', 0):
+            _, back_edges = self.compute_next_adjacency_from_features(
+                features=self.reshape_batch_time(self.features, merge=False),
+                k=((warp_ksize[0] - 1) // 2),
+                backward=True)
+            back_edges = tf.cast(back_edges, tf.float32)
+            aff_loss = losses.cross_entropy(logits=warp_preds[:,1:], labels=back_edges)
+            aff_loss = tf.reduce_mean(aff_loss, axis=-1, keepdims=True)
+            aff_loss = tf.Print(aff_loss, [tf.reduce_sum(aff_loss * edge_px[:,1:]) / tf.maximum(1.0, tf.reduce_sum(edge_px[:,1:])), tf.reduce_mean(tf.reduce_sum(back_edges, axis=-1))], message='warp_aff_loss_bedges')
+            warp_loss += aff_loss * tf.cast(self.estimator_kwargs['warp_affinities_loss_scale'], tf.float32)
+
+        # build a mask for the loss
+        if self.estimator_kwargs.get('mask_with_deltas', False):
+            deltas = tf.cast(self.actions['delta_images'][:,::strides[0],::strides[1]] > self.estimator_kwargs.get('deltas_thresh', 0.1), tf.float32)
+            deltas = self.reshape_batch_time(deltas, merge=False)[:,1:]
+            mask = deltas * edge_px[:,1:]
+        else:
+            mask = edge_px[:,1:]
+        num_valid_px = tf.maximum(tf.reduce_sum(mask, axis=[2,3,4]), 1.0)
+        warp_loss = tf.reduce_sum(warp_loss * mask, axis=[2,3,4]) / num_valid_px
+
+        warp_loss = tf.concat([tf.zeros_like(warp_loss[:,0:1]), warp_loss], axis=1)
+        warp_loss = tf.reshape(warp_loss, [self.BT])
+
+        warp_loss *= self.estimator_kwargs.get('warp_loss_scale', 1.0)
+
+        # reshape warp_preds into 2 new channels that estimate flow
+        if self.aggregation_kwargs.get('concat_new_features', True):
+            delta_hws = utils.coordinate_ims(self.B, self.T, imsize=warp_ksize)
+            delta_hws *= tf.reshape(tf.constant([
+                (warp_ksize[0] - 1.) / 2.,
+                (warp_ksize[1] - 1.) / 2.], tf.float32), [1,1,1,1,2])
+            warp_preds = tf.reshape(warp_preds, [self.BT] + self.size + warp_ksize + [1])
+            delta_hws = self.reshape_batch_time(delta_hws, merge=True)
+            delta_hws = tf.reduce_sum(delta_hws[:,tf.newaxis,tf.newaxis] * warp_preds, axis=[-3,-2])
+            delta_hws /= self.reshape_batch_time(warp_sums, merge=True)
+            # switch h,-w to be x,y
+            delta_hws = tf.stack([-delta_hws[...,1], delta_hws[...,0]], axis=-1)
+            self.new_features = tf.stop_gradient(
+                tf.concat([self.new_features, delta_hws], axis=-1))
+
+            if PRINT:
+                warp_loss = tf.Print(warp_loss, [tf.reduce_mean(warp_loss), tf.reduce_mean(num_valid_px),
+                                                 tf.reduce_min(delta_hws, axis=[0,1,2]), tf.reduce_max(delta_hws, axis=[0,1,2])
+                ], message='warp_loss_num_valid_deltahws')
+
+        return warp_loss
+
+    def compute_parents(self, **kwargs):
+
+        # create pseudo edge label from multiple LP runs #
+        if self.estimator_kwargs.get('sobel_edge_target', False):
+            edge_target = self.compute_sobel_edge_target(**self.estimator_kwargs)
+        else:
+            edge_target = self.compute_pseudo_edge_target(**self.estimator_kwargs)
+
+        # compute pixelwise embedding map and pred edges
+        edge_prob = self.compute_edge_probability(self.encode())
+        if self.aggregation_kwargs.get('concat_new_features', True):
+            self.new_features = tf.concat([self.new_features, edge_prob[...,tf.newaxis]], axis=-1)
+
+        # edge loss
+        self.loss += self.compute_edge_loss(edge_prob, edge_target)
+
+        # compute a loss by warping the edges
+        self.loss += self.compute_warping_loss(edge_prob)
+
+        # compute parents the P1 way
+        labels = P1Level.compute_parents(self, **self.pooling_kwargs)
+
+        return labels
+
+class EdgeOccludeDiffP1Level(EdgeWarpDiffP1Level):
+
+    def __init__(self, occlusion_estimator_kwargs={'keep_parent_loss': True}, **kwargs):
+        self.occlusion_estimator_kwargs = copy.deepcopy(occlusion_estimator_kwargs)
+        super(EdgeOccludeDiffP1Level, self).__init__(**kwargs)
+
+    def compute_occlusion_edge_targets(self, **kwargs):
+        '''
+        Look back in time for each edge pixel and see whether its previous feature better resembles + or - direction
+        '''
+        print(self.edge_mask)
+        import pdb
+        pdb.set_trace()
+        return tf.ones_like(self.new_features[...,0:1])
+
+    def compute_occlusion_edge_features(self, x, **kwargs):
+        '''
+        Predict the polarity of an edge pixel based on surrounding features
+        '''
+        x = tf.reshape(x, [self.BT] + self.size + [-1])
+
+        ## regular features + edge probs + sobel
+        sobel_feats = self.compute_sobel_edge_target(
+            sobel_images_key='images', return_feats=True)
+        x = tf.stop_gradient(tf.concat([
+            x,
+            1.0 - self.new_features[...,0:1],
+            self.new_features[...,1:],
+            self.reshape_batch_time(sobel_feats, merge=True)
+        ], axis=-1))
+
+        with tf.variable_scope('edge_occlude_conv'):
+            occlude_probs = convolutional.conv(x, out_depth=2, train=self.is_training, padding='SAME', activation=None, **self.occlusion_estimator_kwargs)
+        return occlude_probs
+
+    def compute_occlusion_edge_loss(self, logits, labels):
+        logits = logits[...,0:1] # TODO replace
+        loss = tf.nn.sigmoid_cross_entropy_with_logits(logits=logits, labels=labels)[...,0]
+        mask = self.edge_mask[...,0]
+        num_valid = tf.maximum(tf.reduce_sum(mask, axis=[-2,-1]), 1.0)
+        loss *= mask
+        loss = tf.reduce_sum(loss, axis=[-2,-1]) / num_valid
+        loss = tf.Print(loss, [tf.reduce_mean(loss), tf.reduce_mean(num_valid)], message='EOCC_loss')
+        return loss
+
+    def compute_parents(self, **kwargs):
+
+        ## same as before
+        labels = super(EdgeOccludeDiffP1Level, self).compute_parents(**kwargs)
+
+        assert self.new_features.shape.as_list()[-1] == 3, "Must have computed edge prob and warp vectors"
+        occlusion_target = self.compute_occlusion_edge_targets(**kwargs)
+        occlusion_features = self.compute_occlusion_edge_features(self.encode(), **kwargs)
+
+        occ_loss = self.compute_occlusion_edge_loss(logits=occlusion_features, labels=occlusion_target)
+        if self.occlusion_estimator_kwargs.get('keep_parent_loss', True):
+            self.loss += occ_loss
+        else:
+            self.loss = occ_loss
+
+        if self.occlusion_estimator_kwargs.get('concat_new_features', True):
+            ## put occlusion features in range (-1., 1.)
+            self.new_features = tf.stop_gradient(tf.concat([
+                self.new_features, tf.tanh(occlusion_features)], axis=-1))
+
+        return labels
+
+class P3Level(P2Level):
+
+    def compute_affinities(self, nodes=None, **kwargs):
+
+        kwargs.update(self.affinity_kwargs)
+        motion_nodes = self.motion_nodes if nodes is None else nodes
+
+        # spatial
+        with tf.variable_scope('space_affinities'):
+            affinities = P2Level.compute_affinities(
+                self, nodes=motion_nodes, valid_nodes=self.valid_nodes, **kwargs)
+
+        # temporal
+        time_kwargs = copy.deepcopy(kwargs)
+        self.NT = self.N * self.T
+        time_kwargs['kNN'] = self.NT
+        motion_time_nodes = tf.reshape(
+            self.reshape_batch_time(motion_nodes, merge=False),
+            [self.B, self.T * self.N, -1])
+        valid_time_nodes = tf.reshape(
+            self.reshape_batch_time(self.valid_nodes, merge=False),
+            [self.B, self.T * self.N])
+        with tf.variable_scope('time_affinities'):
+            time_affinities = P2Level.compute_affinities(
+                self, nodes=motion_time_nodes, valid_nodes=valid_time_nodes, **time_kwargs)
+            time_affinities *= valid_time_nodes[...,tf.newaxis] * valid_time_nodes[:,tf.newaxis,:]
+            inds = tf.reshape(tf.range(self.NT, dtype=tf.int32), [1,-1,1])
+            inds = tf.math.floordiv(inds, tf.constant(self.N, tf.int32))
+            off_diag = tf.logical_not(tf.equal(inds, tf.transpose(inds, [0,2,1])))
+            time_affinities *= tf.cast(off_diag, tf.float32)
+            self.affinities_temporal = time_affinities
+            self.edges_temporal = self.affinities_temporal > kwargs.get('thresh', 0.5)
+        self.edges_temporal = time_affinities > kwargs.get('edge_thresh', 0.5)
+
+        return affinities
+
+    def compute_parents(self, **kwargs):
+
+        kwargs.update(self.pooling_kwargs)
+
+        spacetime_edges = self.combine_spacetime_affinities(
+            self.reshape_batch_time(self.edges, merge=False), self.edges_temporal)
+        spacetime_valid_nodes = tf.reshape(
+            self.reshape_batch_time(self.valid_nodes, merge=False),
+            [self.B, self.T*self.N])
+        labels, num_segments = pooling.compute_segments_by_label_prop(
+            edges=spacetime_edges, size=None,
+            valid_nodes=spacetime_valid_nodes, **kwargs)
+
+        # convert back to [BT] as leading dimension rather than [B]
+        valid_inds = tf.where(spacetime_valid_nodes > 0.5) # [?,2]
+        labels = tf.scatter_nd(
+            indices=valid_inds,
+            updates=labels,
+            shape=[self.B, self.T*self.N]
+        ) # 0 at invalid node positions
+        offsets = tf.cumsum(num_segments, axis=0, exclusive=True) # [B]
+        labels -= offsets[:,tf.newaxis] # now start at 0 per example
+
+        # make each time point have distinct numbers, but node ids indicate time tracking
+
+        num_segments = tf.reshape(tf.tile(num_segments[:,tf.newaxis], [1,self.T]), [self.BT])
+        offsets = tf.cumsum(num_segments, axis=0, exclusive=True)
+        labels = self.reshape_batch_time(
+            tf.reshape(labels, [self.B, self.T, self.N]), merge=True) # [BT,N]
+        labels += offsets[:,tf.newaxis]
+        valid_inds = tf.where(tf.reshape(self.valid_nodes, [self.BT, self.N]) > 0.5) # [?,2]
+        labels = tf.gather_nd(labels, valid_inds)
+
+        self.num_parents = num_segments
+        return labels
+
+    @staticmethod
+    def combine_spacetime_affinities(space_adj, time_adj):
+        B,T,N,N = space_adj.shape.as_list()
+        NT = N*T
+        assert time_adj.shape.as_list() == [B,NT,NT], time_adj
+        dtype = space_adj.dtype
+        assert time_adj.dtype == dtype, (time_adj, dtype)
+        space_adj = tf.tile(tf.reshape(space_adj, [B,NT,N]), [1,1,T])
+        inds = tf.reshape(tf.range(NT, dtype=tf.int32), [1,-1,1])
+        inds = tf.math.floordiv(inds, tf.constant(N, tf.int32))
+        block_diag = tf.cast(tf.equal(inds, tf.transpose(inds, [0,2,1])), dtype)
+        if dtype != tf.bool:
+            spacetime_adj = (space_adj * block_diag) + (time_adj * (1. - block_diag))
+        else:
+            spacetime_adj = tf.logical_or(
+                tf.logical_and(space_adj, block_diag),
+                tf.logical_and(time_adj, tf.logical_not(block_diag))
+            )
+
+        return spacetime_adj
+
+class EdgeFloodP3Level(P3Level, P0GlobalLevel):
+
+    def __init__(self, use_vae=False, compute_time_edges=False, spacetime_cluster=False, estimator_kwargs={}, **kwargs):
+
+        self.use_vae = use_vae
+        self.compute_time_edges = compute_time_edges
+        self.spacetime_cluster = spacetime_cluster
+        self.estimator_kwargs = copy.deepcopy(estimator_kwargs)
+        super(EdgeFloodP3Level, self).__init__(**kwargs)
+
+    def reshape_inputs(self, **kwargs):
+
+        # reshape everything as usual
+        super(EdgeFloodP3Level, self).reshape_inputs(**kwargs)
+        self.edge_nodes, self.edge_segment_ids = self.compute_edge_nodes(**kwargs)
+
+    def compute_edge_nodes(self, **kwargs):
+
+        # aggregate the new features -- i.e. the edge maps -- into segments/edge_nodes
+        self.edge_thresh = self.estimator_kwargs.get('edge_threshold', 0.5)
+        edims = self.estimator_kwargs.get('edge_feature_dims', [0,3])
+        self.edge_features = self.actions[self.input_name + '_new_features']
+        Enew = 0
+        if self.estimator_kwargs.get('concat_new_features_edges', True):
+            if len(self.new_features.shape) == len(self.edge_features.shape):
+                Enew = self.new_features.shape.as_list()[-1]
+                self.edge_features = tf.concat(
+                    [self.edge_features, self.new_features], axis=-1)
+        self.edge_features = self.edge_features[...,edims[0]:edims[1]]
+        # assert self.edge_features.shape.as_list()[-1] >= 3
+        self.edge_valid = self.edge_features[...,0:1] < self.edge_thresh
+
+        # stop gradient on the edge features -- these shouldn't be changed
+        sg_func = tf.stop_gradient if self.estimator_kwargs.get('stop_gradient_edge_features', True) else tf.identity
+        self.edge_features = sg_func(tf.concat([
+            self.edge_features, tf.cast(self.edge_valid, tf.float32)], axis=-1))
+        size = self.edge_features.shape.as_list()[-3:-1]
+        E = self.edge_features.shape.as_list()[-1]
+
+        # now do image LP on the edge features
+        if E > 2 and Enew > 0:
+            edgeDims = DimensionDict(
+                OrderedDict([('edge_probs', 1), ('edge_feats', E-2-Enew), ('edge_new_feats', Enew), ('edge_binary', 1)])
+            )
+        elif E > 2:
+            edgeDims = DimensionDict(
+                OrderedDict([('edge_probs', 1), ('edge_feats', E-2), ('edge_binary', 1)])
+            )
+        else:
+            edgeDims = DimensionDict(
+                OrderedDict([('edge_probs', 1), ('edge_binary', 1)])
+            )
+
+        print("edge_features", self.edge_features)
+        print("edge Dims", edgeDims)
+
+        edge_adjacency = graphical.compute_adjacency_from_features(
+            features=self.edge_features, return_neighbors=False, return_affinities=False,
+            metric=graphical.euclidean_dist2_valid, **self.estimator_kwargs
+        )
+
+        edge_labels, edge_num_segs = pooling.labelprop_image_sync(
+            tf.reshape(edge_adjacency, [self.BT] + size + [-1])
+        )
+
+        edge_nodes, _ , edgeDims = vectorizing.aggregate_mean_and_var_features(
+            features=self.edge_features, segment_ids=edge_labels,
+            num_segments=edge_num_segs, max_segments=self.N, dimension_dict=edgeDims, agg_vars=self.estimator_kwargs.get('edge_agg_vars', True)
+        )
+
+        if self.estimator_kwargs.get('concat_contour_attrs', True):
+            contour_attrs = vectorizing.compute_border_attributes(
+                nodes=edge_nodes,
+                segment_map=tf.reshape(edge_labels, [self.B, self.T] + size),
+                features=(1.0 - self.edge_features[...,0:1]),
+                divide_by_quadrant=True,
+                shape_feats=False
+            )
+            edge_nodes = tf.concat([
+                edge_nodes[...,:-4],
+                contour_attrs,
+                edge_nodes[...,-4:]
+            ], axis=-1)
+            edgeDims.insert_from(DimensionDict({'contour_attrs': contour_attrs.shape.as_list()[-1]}), position=-4)
+
+        # redefine valid attribute to be where there's actual edge pixels
+        self.valid_edge_nodes = edgeDims.get_tensor_from_attrs(edge_nodes, 'edge_binary', concat=True) > (1. - self.edge_thresh)
+        edge_nodes = tf.concat([
+            edge_nodes[...,:-1],
+            edge_nodes[...,-1:] * tf.cast(self.valid_edge_nodes, tf.float32)
+        ], axis=-1)
+
+        self.valid_edge_nodes = edge_nodes[...,-1:] > (1. - self.edge_thresh)
+        edge_nodes = tf.Print(edge_nodes, [tf.reduce_mean(tf.reduce_sum(edge_nodes[...,-1], axis=-1))], message='num_valid_edge_nodes')
+        self.edgeDims = edgeDims.sort()
+        print("final edge dims", self.edgeDims)
+
+        return edge_nodes, edge_labels
+
+    def compute_edge_to_edge_affinities(self, **kwargs):
+
+        kwargs.update(self.affinity_kwargs)
+        assert self.edge_nodes is not None
+        NE = self.edge_nodes.shape.as_list()[1]
+        edge_nodes = self.edge_nodes[:,:,tf.newaxis]
+        if kwargs.get('symmetric', False):
+            node_pairs = tf.abs(edge_nodes - tf.transpose(edge_nodes, [0,2,1,3]))
+        elif kwargs.get('diff_inputs', True):
+            node_pairs = edge_nodes - tf.transpose(edge_nodes, [0,2,1,3])
+        else:
+            node_pairs = tf.concat([
+                tf.tile(edge_nodes, [1,1,NE,1]),
+                tf.tile(tf.transpose(edge_nodes, [0,2,1,3]), [1,NE,1,1])
+            ], axis=-1)
+
+        mlp_kwargs = copy.deepcopy(kwargs)
+        mlp_kwargs['hidden_dims'] = mlp_kwargs.get('hidden_dims', []) + [1]
+        with tf.variable_scope('edge_edge_affinities_mlp'):
+            e_to_e_affinities = convolutional.mlp(
+                inp=node_pairs, scope='edge_edge_affinities', **mlp_kwargs)[...,0]
+
+        e_to_e_affinities = tf.nn.sigmoid(e_to_e_affinities)
+        e_to_e_affinities *= tf.cast(tf.logical_and(self.valid_edge_nodes, tf.transpose(self.valid_edge_nodes, [0,2,1])), tf.float32)
+        return e_to_e_affinities
+
+    def compute_edge_to_node_affinities(self, **kwargs):
+        '''
+        Predict affinities where edges and segments overlap
+        '''
+
+        assert self.edge_nodes is not None
+        assert self.motion_nodes is not None
+        NE = self.edge_nodes.shape.as_list()[1]
+        NM = self.motion_nodes.shape.as_list()[1]
+
+        ## learn an MLP
+        edge_nodes = tf.tile(self.edge_nodes[:,:,tf.newaxis], [1,1,NM,1]) # [BT,NE,NM,DE]
+        motion_nodes = tf.tile(self.motion_nodes[:,tf.newaxis], [1,NE,1,1]) # [BT,NE,NM,DM]
+        node_pairs = tf.concat([
+            tf.reshape(edge_nodes, [self.BT,NE*NM,-1]),
+            tf.reshape(motion_nodes, [self.BT,NE*NM,-1])
+        ], axis=-1)
+
+        ## TODO: add diff features (like centroid diffs) and also info from bottom up features/temporal diffs?
+        print("ADD DIFF FEATURES HERE!")
+
+        with tf.variable_scope("edges_to_motion_nodes_affinities_mlp"):
+            mlp_kwargs = copy.deepcopy(kwargs)
+            mlp_kwargs['hidden_dims'] = mlp_kwargs.get('hidden_dims', []) + [1]
+            e_to_n_affinities = convolutional.mlp(
+                inp=node_pairs, scope='edges_to_motion_nodes', **mlp_kwargs)[...,0]
+            e_to_n_affinities = tf.nn.sigmoid(e_to_n_affinities)
+            e_to_n_affinities = tf.reshape(e_to_n_affinities, [self.BT, NE, NM])
+
+        ## mask out where there's no overlap
+        overlap = utils.find_segment_overlap(
+            segs1=tf.reshape(self.edge_segment_ids, self.segment_ids.shape),
+            segs2=self.segment_ids,
+            segs_valid=self.edge_valid[...,0],
+            max_segs=self.N
+        )
+        valid_affinities = tf.cast(
+            tf.logical_and(
+                overlap,
+                tf.logical_and(
+                    self.valid_edge_nodes,
+                    self.valid_nodes[:,tf.newaxis] > 0.5
+                )
+            ), tf.float32
+        )
+        e_to_n_affinities *= valid_affinities
+        # e_to_n_affinities *= tf.cast(overlap, tf.float32)
+        # e_to_n_affinities *= tf.cast(self.valid_edge_nodes, tf.float32)
+        # e_to_n_affinities *= tf.cast(self.valid_nodes[:,tf.newaxis], tf.float32)
+        if PRINT:
+            e_to_n_affinities = tf.Print(
+                e_to_n_affinities, [
+                    tf.reduce_mean(tf.reduce_sum(e_to_n_affinities, axis=[1,2])),
+                    tf.reduce_mean(tf.reduce_sum(valid_affinities, axis=[1,2]))
+                ], message='e_to_n_affinities_valid')
+
+        return e_to_n_affinities
+
+    def aggregate_motion_attrs(self, **kwargs):
+        '''
+        Do a special vectorization over "moving" channels
+        '''
+
+        motion_attrs = self.estimator_kwargs.get('motion_attrs', ['delta_rgb', 'delta_images'])
+        motion_ims = tf.concat([self.actions[attr] for attr in motion_attrs], axis=-1)
+        imsize = motion_ims.shape.as_list()[-3:-1]
+        size = self.segment_ids.shape.as_list()[-2:]
+        strides = [imsize[0] // size[0], imsize[1] // size[1]]
+        motion_ims = motion_ims[:,::strides[0],::strides[1]]
+        motion_attrs, _, _ = vectorizing.aggregate_mean_and_var_features(
+            features=motion_ims, segment_ids=self.segment_ids, max_segments=self.N, agg_vars=self.estimator_kwargs.get('motion_agg_vars', True)
+        )
+        motion_attrs = motion_attrs[...,:-4]
+        return motion_attrs
+
+    def compute_affinities(self, **kwargs):
+
+        kwargs.update(self.affinity_kwargs)
+
+        motion_attrs = self.aggregate_motion_attrs(**kwargs)
+        self.motion_nodes = tf.concat([motion_attrs, self.nodes], axis=-1)
+        if self.estimator_kwargs.get('stop_gradient_motion', False):
+            self.motion_nodes = tf.stop_gradient(self.motion_nodes)
+
+        # compute edge-node affinities and edge-edge affinities
+        self.edge_to_node_affinities = self.compute_edge_to_node_affinities(**kwargs)
+        if self.estimator_kwargs.get('edge_to_edge_affinities', False):
+            self.edge_to_edge_affinities = self.compute_edge_to_edge_affinities(**kwargs)
+        else:
+            self.edge_to_edge_affinities = None
+
+        # compute spatial and temporal node-node affinities
+        if self.use_vae:
+            Dm = motion_attrs.shape.as_list()[-1]
+            self.inputDims.insert('motion_attrs', [0,Dm])
+            self.inputDims['vector'] = [0,0]
+            affinities = P3Level.compute_affinities(self, nodes=self.motion_nodes, **kwargs)
+            self.inputDims.delete('motion_attrs', remove_dims=True)
+            self.inputDims['vector'] = [0,0]
+            return affinities
+
+        with tf.variable_scope('spatial_affinities_mlp'):
+            node_node_affinities_spa = P0GlobalLevel.compute_affinities(self, nodes=self.motion_nodes, **kwargs)
+
+        if self.compute_time_edges:
+            self.NT = self.N * self.T
+            motion_nodes_time = self.reshape_batch_time(self.motion_nodes, merge=False)
+            motion_nodes_time = tf.reshape(
+                motion_nodes_time, [self.B, self.NT, -1])
+            valid_nodes_time = tf.reshape(
+                self.reshape_batch_time(self.valid_nodes, merge=False),
+                [self.B, self.NT])
+            with tf.variable_scope('temporal_affinities_mlp'):
+                node_node_affinities_tempo = P0GlobalLevel.compute_affinities(
+                    self, nodes=motion_nodes_time, nodes_other=motion_nodes_time, **kwargs)
+            # set within-frame block diagonal to 0
+            inds = tf.reshape(tf.range(self.NT, dtype=tf.int32), [1,-1,1])
+            inds = tf.math.floordiv(inds, tf.constant(self.N, tf.int32))
+            off_diag = tf.logical_not(tf.equal(inds, tf.transpose(inds, [0,2,1])))
+            node_node_affinities_tempo *= tf.cast(off_diag, tf.float32)
+            self.affinities_temporal = node_node_affinities_tempo
+            self.edges_temporal = tf.nn.sigmoid(self.affinities_temporal) > kwargs.get('thresh', 0.5)
+        else:
+            self.affinities_temporal = self.edges_temporal = None
+
+        return node_node_affinities_spa
+
+    def threshold_affinities(self, **kwargs):
+
+        if self.use_vae:
+            return P3Level.threshold_affinities(self, **kwargs)
+        else:
+            return P0GlobalLevel.threshold_affinities(self, **kwargs)
+
+    def flood_fill_edges_to_nodes(self, **kwargs):
+        '''
+        Recurrent Graph RNN that loads effects from edges onto motion nodes, then flood fills on the motion node-to-node (spatiotemporal) graph
+        '''
+        ## input nodes
+        e_nodes = self.edge_nodes
+        m_nodes = self.motion_nodes
+
+        ## precomputed affinities, which are in (0.,1.)
+        def _bin_func(adj):
+            _bin = (lambda adj: tf.cast(adj > 0.5, tf.float32)) if self.estimator_kwargs.get('binary_flood_edges', False) else (lambda x:x)
+            return _bin(adj) if adj is not None else adj
+        A_ee = _bin_func(self.edge_to_edge_affinities)
+        A_en = _bin_func(self.edge_to_node_affinities)
+        A_nn = _bin_func(self.affinities if self.use_vae else tf.nn.sigmoid(self.affinities))
+        A_nn *= self.valid_nodes[...,tf.newaxis] * self.valid_nodes[:,tf.newaxis,:]
+
+        ## convert to a true spacetime graph [B,NT,NT]
+        if self.compute_time_edges:
+            A_nn_t = _bin_func(self.affinities_temporal if self.use_vae else tf.nn.sigmoid(self.affinities_temporal))
+            valid_time_nodes = tf.reshape(
+                self.reshape_batch_time(self.valid_nodes, merge=False),
+                [self.B, self.T * self.N])
+            A_nn_t *= valid_time_nodes[...,tf.newaxis] * valid_time_nodes[:,tf.newaxis,:]
+            A_nn = P3Level.combine_spacetime_affinities(
+                self.reshape_batch_time(A_nn, merge=False), A_nn_t)
+
+        ## lift nodes into space of a common dimension
+        embedding_mlp_kwargs = copy.deepcopy(self.estimator_kwargs.get('embedding_mlp_kwargs', {'hidden_dims': [10], 'activations': tf.nn.elu}))
+        e_nodes = convolutional.mlp(
+            inp=e_nodes, scope='embed_edge_nodes', **embedding_mlp_kwargs)
+        m_nodes = convolutional.mlp(
+            inp=m_nodes, scope='embed_motion_nodes', **embedding_mlp_kwargs)
+
+        ## load e_nodes onto m_nodes
+        D = m_nodes.shape.as_list()[-1]
+        norm_func = graphical.normalize_adj if self.estimator_kwargs.get('normalize_adj', True) else tf.identity
+        A_ee_hat = norm_func(A_ee) if A_ee is not None else None
+        A_ne_hat = norm_func(tf.transpose(A_en, [0,2,1]))
+        A_nn_hat = norm_func(A_nn)
+        e_nodes = tf.matmul(A_ee_hat, e_nodes) if A_ee_hat is not None else e_nodes
+        e_effects = tf.matmul(A_ne_hat, e_nodes)
+
+        if self.compute_time_edges:
+            m_nodes = tf.reshape(
+                self.reshape_batch_time(m_nodes, merge=False),
+                [self.B, self.T*self.N, -1])
+            e_effects = tf.reshape(
+                self.reshape_batch_time(e_effects, merge=False),
+                [self.B, self.T*self.N, -1])
+
+        ## flood fill
+        m_nodes = tf.zeros_like(m_nodes) if self.estimator_kwargs.get('zero_init_flood', False) else m_nodes
+        num_flood_iters = self.estimator_kwargs.get('num_flood_iters', 5)
+        if self.estimator_kwargs.get('use_graph_rnn', True):
+            grnn_op = graph_rnn_constructor(
+                num_iters=num_flood_iters, scope='flood_fill',
+                **self.estimator_kwargs.get('graph_rnn_kwargs', {}))
+            m_nodes, lcp = grnn_op(e_effects, m_nodes, A_nn_hat)
+            # grad = tf.reduce_sum(tf.abs(tf.gradients(m_nodes, e_effects)[0]))
+            # lcp = tf.Print(lcp, [lcp, grad], message='lcp_OIgrad')
+
+            self.loss += lcp * self.estimator_kwargs.get('lcp_scale', 0.01)
+        else:
+            for it in range(num_flood_iters):
+                ## load edge effects onto motion nodes
+                if self.estimator_kwargs.get('load_edge_effects', True):
+                    m_nodes += e_effects
+                ## exchange info across channels
+                m_nodes = convolutional.mlp(
+                    inp=m_nodes, scope='flood_fill', hidden_dims=[D], activations=None)
+                ## propagate through graph via affinities
+                m_nodes = tf.matmul(A_nn_hat, m_nodes)
+                m_nodes = (tf.identity or self.estimator_kwargs.get('flood_activation', None))(m_nodes)
+
+        ## output embedding
+        output_mlp_kwargs = copy.deepcopy(self.estimator_kwargs.get('output_mlp_kwargs', {'hidden_dims': [24]}))
+        m_nodes = convolutional.mlp(
+            inp=m_nodes, scope='flood_output', **output_mlp_kwargs)
+
+        ## reshape to time-separated nodes
+        if self.compute_time_edges:
+            m_nodes = self.reshape_batch_time(
+                tf.reshape(m_nodes, [self.B,self.T,self.N,-1]),
+                merge=True)
+
+        return m_nodes
+
+    def compute_parents(self, **kwargs):
+
+        if self.spacetime_cluster:
+            assert self.edges_temporal is not None, "Must compute temporal edges to do spacetime clustering!"
+            return P3Level.compute_parents(self, **kwargs)
+        else:
+            self.size = None
+            return P0GlobalLevel.compute_parents(self, **kwargs)
+
+    def aggregate_nodes_and_features(self, **kwargs):
+        '''
+        Flood fill the segment nodes with edge nodes as source
+        '''
+        flooded_child_nodes = self.flood_fill_edges_to_nodes(**kwargs)
+        Dnew = flooded_child_nodes.shape.as_list()[-1]
+
+        # tack the flood attrs onto the child nodes
+        self.nodes = tf.concat([
+            self.nodes[...,:-4],
+            flooded_child_nodes,
+            self.nodes[...,-4:]
+        ], axis=-1)
+
+        self.inputDims.delete('vector')
+        self.flood_attr_name = self.estimator_kwargs.get('flood_attr_name', 'pred_flood_attrs') + '_' + self.name
+        self.inputDims.insert_from(DimensionDict({self.flood_attr_name: Dnew}), position=-4)
+        self.inputDims['vector'] = [0,self.nodes.shape.as_list()[-1]]
+
+        parent_nodes = super(EdgeFloodP3Level, self).aggregate_nodes_and_features(**kwargs)
+
+        return parent_nodes
+
+class DepthFromMotionP3Level(EdgeFloodP3Level):
+
+    def __init__(self,
+                 occlusion_kwargs={'flows_dims': ('pred_flood_attrs', [[1,3]])},
+                 **kwargs):
+        self.occlusion_kwargs = copy.deepcopy(occlusion_kwargs)
+        super(DepthFromMotionP3Level, self).__init__(**kwargs)
+
+    def compute_occlusion_features(self, **kwargs):
+        print("compute occlusion features")
+        print(self.occlusion_kwargs)
+        fwd_flows = self.inputDims.get_attr_dims(self.nodes, *self.occlusion_kwargs['flows_dims'], stop_gradient=True)
+        if self.occlusion_kwargs.get('back_flows_dims', None) is not None:
+            bck_flows = self.inputDims.get_attr_dims(self.nodes, *self.occlusion_kwargs['back_flows_dims'], stop_gradient=True)
+        else:
+            print("using reverse of fwd flows")
+            bck_flows = -fwd_flows
+
+        fwd_flows = self.reshape_batch_time(fwd_flows, merge=False)
+        bck_flows = self.reshape_batch_time(bck_flows, merge=False)
+        seg_ids = self.reshape_batch_time(self.segment_ids, merge=False)
+
+        ## render
+        fwd_flows = rendering.render_nodes_with_segment_ids(fwd_flows, seg_ids)
+        bck_flows = rendering.render_nodes_with_segment_ids(bck_flows, seg_ids)
+
+        fwd_occs, bck_occs = rendering.compute_occlusion_map(fwd_flows, bck_flows, **self.occlusion_kwargs)
+        occlusions = tf.maximum(
+            tf.concat([tf.zeros_like(fwd_occs[:,0:1]), fwd_occs[:,1:]], axis=1),
+            tf.concat([bck_occs[:,0:-1], tf.zeros_like(bck_occs[:,-1:])], axis=1)
+        )
+        occlusions = self.reshape_batch_time(occlusions, merge=True)
+
+        ## compute occlusion directions
+        edge_feats = self.actions[self.input_name + '_new_features']
+        assert edge_feats.shape.as_list()[-1] == 3, edge_feats
+        edge_feats = self.reshape_batch_time(edge_feats, merge=False)
+        edge_valid = tf.cast(edge_feats[...,0:1] < self.estimator_kwargs.get('edge_threshold', 0.5), tf.float32)
+        edge_flows = edge_feats[...,1:3]
+        fwd_occ_dirs = -fwd_occs[:,1:] * edge_flows[:,0:-1] * edge_valid[:,0:-1]
+        fwd_occ_dirs = tf.concat([fwd_occ_dirs, tf.zeros_like(fwd_occ_dirs[:,0:1])], axis=1)
+        bck_occ_dirs = bck_occs[:,0:-1] * edge_flows[:,1:] * edge_valid[:,1:]
+        bck_occ_dirs = tf.concat([tf.zeros_like(bck_occ_dirs[:,0:1]), bck_occ_dirs], axis=1)
+
+        occ_dirs = fwd_occ_dirs + bck_occ_dirs # only accurate in t=1:-1
+        occ_dirs = self.reshape_batch_time(occ_dirs, merge=True)
+
+        occ_features = tf.concat([occlusions, occ_dirs], axis=-1) # [BT,H,W,3]
+        self.new_features = occ_features
+
+    def compute_edge_nodes(self, **kwargs):
+        self.compute_occlusion_features()
+        return super(DepthFromMotionP3Level, self).compute_edge_nodes(**kwargs)
+
+    def compute_occlusion_loss(self, **kwargs):
+
+        ## get the occlusion directions
+        occ_dirs = self.edgeDims.get_attr_dims(self.edge_nodes, 'edge_new_feats', [[1,3]], position=0, stop_gradient=True)
+        occ_delta_inds = tf.stack([ # xy to hw in pixels
+            -occ_dirs[...,1], occ_dirs[...,0]], axis=-1)
+        occ_delta_inds *= self.occlusion_kwargs.get('scale_factor', 1.)
+
+        edges_hw = self.edgeDims.get_attr_dims(self.edge_nodes, 'hw_centroids', [[0,2]], position=-1, stop_gradient=True)
+        edges_inds = (edges_hw + 1.) / 2. # now in [0.,1.]
+        size = self.segment_ids.shape.as_list()[1:]
+        edges_inds *= tf.reshape(tf.cast(size, tf.float32), [1,1,2])
+
+        def _to_int(inds):
+            h,w = tf.split(inds, [1,1], axis=-1)
+            invalid_h = tf.logical_or(h < 0., h > size[0] - 1.)
+            invalid_w = tf.logical_or(w < 0., w > size[1] - 1.)
+            invalid = tf.logical_or(invalid_h, invalid_w)
+            h = tf.minimum(tf.cast(tf.round(h), tf.int32), size[0]-1)
+            w = tf.minimum(tf.cast(tf.round(w), tf.int32), size[1]-1)
+            return tf.maximum(tf.concat([h,w], -1), 0), invalid
+        uphill_inds, uphill_invalid = _to_int(edges_inds + occ_delta_inds)
+        downhill_inds, downhill_invalid = _to_int(edges_inds - occ_delta_inds)
+
+        if self.occlusion_kwargs.get('debug', False):
+            all_inds = tf.concat([tf.cast(edges_inds, tf.int32), uphill_inds, downhill_inds], axis=-1)
+            self.nodes = tf.concat([
+                self.nodes[...,:-4], tf.cast(all_inds, tf.float32), self.nodes[...,-4:]], -1)
+            self.inputDims.insert_from(DimensionDict({'occ_inds': 6}), position=0)
+
+            uphill_inds = tf.Print(uphill_inds, [tf.reduce_max(tf.abs(occ_delta_inds)), tf.reduce_max(uphill_inds), tf.reduce_min(uphill_inds)], message='occ_inds')
+        nodes = self.reshape_batch_time(self.nodes, merge=False)
+        uphill_inds = self.reshape_batch_time(uphill_inds, merge=False)
+        downhill_inds = self.reshape_batch_time(downhill_inds, merge=False)
+        seg_ids = self.reshape_batch_time(self.segment_ids, merge=False)
+
+        uphill_nodes = rendering.nodes_from_spatial_inds(
+            nodes, uphill_inds, seg_ids, size)
+        downhill_nodes = rendering.nodes_from_spatial_inds(
+            nodes, downhill_inds, seg_ids, size)
+
+        uphill_ds = self.inputDims.get_attr_dims(uphill_nodes, self.flood_attr_name, [[0,1]], stop_gradient=False)
+        downhill_ds = self.inputDims.get_attr_dims(downhill_nodes, self.flood_attr_name, [[0,1]], stop_gradient=False)
+        ddims = self.inputDims[self.flood_attr_name]
+        self.inputDims['pred_occlusion_depths'] = [ddims[0], ddims[0] + 1]
+
+        ds_diff = self.occlusion_kwargs.get('depths_beta', 0.5) * (uphill_ds - downhill_ds)
+        ds_diff = tf.Print(ds_diff, [tf.reduce_max(ds_diff), tf.reduce_min(ds_diff)], message='ds_diff')
+
+        loss = tf.nn.sigmoid_cross_entropy_with_logits(
+            logits=ds_diff, labels=tf.ones_like(ds_diff))
+
+        ## mask
+        valid = self.reshape_batch_time(self.valid_edge_nodes, merge=False)
+        occ_mags = tf.stop_gradient(tf.sqrt(
+            tf.reduce_sum(tf.square(occ_dirs), axis=-1, keepdims=True)))
+        occ_mags = self.reshape_batch_time(occ_mags, merge=False)
+        valid = tf.logical_and(valid, occ_mags > self.occlusion_kwargs.get('occlusion_thresh', 1.))
+        in_bounds = tf.logical_not(tf.logical_or(uphill_invalid, downhill_invalid))
+        valid = tf.logical_and(valid, self.reshape_batch_time(in_bounds, merge=False))
+
+        ltimes = self.occlusion_kwargs.get('loss_times', [1,-1])
+        valid = tf.cast(valid[:,ltimes[0]:ltimes[1]], tf.float32)
+        num_valid = tf.reduce_sum(valid, axis=[-2,-1])
+
+        loss = tf.reduce_sum(loss[:,ltimes[0]:ltimes[1]] * valid, axis=[-2,-1])
+        loss = loss / tf.maximum(num_valid, 1.)
+
+        grad = tf.reduce_max(tf.abs(tf.gradients(loss, uphill_ds)[0]))
+        loss = tf.Print(loss, [tf.reduce_mean(num_valid), tf.reduce_mean(tf.cast(in_bounds, tf.float32)), grad], message='occ_valid/inbounds/grad')
+        loss = tf.concat([loss, tf.zeros([self.B, self.T - loss.shape.as_list()[-1]], dtype=tf.float32)], axis=1)
+        loss = self.reshape_batch_time(loss, merge=True)
+
+        loss_scale = self.occlusion_kwargs.get('loss_scale', 1.)
+        return loss * loss_scale
+
+    def aggregate_nodes_and_features(self, **kwargs):
+        parent_nodes = super(DepthFromMotionP3Level, self).aggregate_nodes_and_features(**kwargs)
+
+        self.loss += self.compute_occlusion_loss(**kwargs)
+        return parent_nodes
+
+if __name__ == '__main__':
+
+    import os
+    os.environ['CUDA_VISIBLE_DEVICES'] = ''
+    sess = tf.Session()
+
+    SHAPE = [2,4,64,64,40]
+    B,T,H,W,C = SHAPE
+    N = H*W
+
+    # make an image with four quadrants
+    features = tf.reshape(tf.range(4, dtype=tf.float32), [1,2,2,1])
+    features = tf.image.resize_images(features, size=SHAPE[2:4])
+    features = tf.tile(features[:,tf.newaxis], SHAPE[0:2] + [1,1] + SHAPE[-1:])
+    # features = tf.random.uniform(SHAPE, dtype=tf.float32)
+
+    input_nodes = tf.reshape(features, [B,T,N,-1])
+
+    # fut_aff, fut_adj = EdgeWarpDiffP1Level.compute_next_adjacency_from_features(
+    #     features, k=4)
+    # print(fut_aff, fut_adj)
+
+    # fut_adj = sess.run(fut_aff[0,0,15,15])
+    # print("fut_adj", fut_adj)
+    # neighbors = graphical.compute_adjacency_from_features(
+    #     tf.reshape(features, [B*T,H,W,C]), k=4, return_neighbors=True)
+
+    # neighbors_ptch = graphical.compute_adjacency_from_features(
+    #     tf.reshape(features, [B*T,H,W,C]), k=4, return_neighbors=True, extract_patches=True)
+
+    # same = tf.reduce_sum(tf.cast(tf.equal(neighbors, neighbors_ptch), tf.int32))
+    # same = sess.run(same)
+    # print("same", same, "max", np.prod(SHAPE)*81)
+
+    Level = EdgeWarpDiffP1Level(
+        name='level1', input_name='level0', num_nodes=256, num_attrs=24,
+        affinity_kwargs={'k': 2, 'symmetric': True, 'hidden_dims':[100,100]},
+        pooling_kwargs={'num_steps': 10},
+        aggregation_kwargs={'agg_vars': True, 'concat_new_features': True},
+        mlp_kwargs={'activations': tf.nn.elu, 'hidden_dims': [100]},
+        graphconv_kwargs={'agg_type': 'mean', 'hw_thresh': 0.5, 'hidden_dims': [100], 'concat_effects': False},
+        format_kwargs={'keep_features': True, 'xyz_attr': True},
+        use_gcn=False,
+        estimator_kwargs={'num_lp_runs': 5, 'ksize': [5,5], 'warp_ksize':[7,7],
+                          'warp_softmax': False, 'warp_affinities_loss_scale': 1.0
+        }
+    )
+
+    EFLevel = EdgeFloodP3Level(
+        name='level2', input_name='level1', num_nodes=64, num_attrs=24, use_vae=False,
+        estimator_kwargs={'k': 2, 'metric_kwargs': {'thresh': 'local'}}
+    )
+    actions = {'delta_rgb': tf.ones(SHAPE, dtype=tf.float32)[...,0:3], 'delta_images': tf.ones(SHAPE, dtype=tf.float32)[...,0:1]}
+    outputs = Level(input_nodes, features=features, train=True, actions=actions)
+    actions[EFLevel.input_name + '_new_features'] = outputs['new_features']
+    outputs = EFLevel(
+        outputs['parent_nodes'],
+        input_segment_ids=outputs['parent_segment_ids'],
+        inputDims=Level.Dims,
+        features=features, train=True, actions=actions)
+
+    import pdb
+    pdb.set_trace()
+
+    # sess.run(tf.global_variables_initializer())
+    # loss = sess.run(outputs['loss'])

@@ -1,0 +1,457 @@
+{
+    "nodes": [
+      {
+       "name": "conv0",
+       "shape": [
+          256,
+          256,
+          3
+       ],
+       "dtype": "float32",
+       "input_init": {
+         "function": "zeros"
+       },
+       "state_init": {
+         "function": "zeros"
+       },
+       "harbor": {
+           "function": "harbor",
+	   "spatial_op": "resize"
+       },
+       "pre_memory": [
+         {
+           "function": "component_conv",
+           "input_name": "split",
+           "weight_decay": 0.00001,
+           "out_depth": 32,
+           "ksize": 7,
+           "strides": [
+             1,
+             2,
+             2,
+             1
+           ],
+           "padding": "SAME",
+           "kernel_init": "normal",
+           "kernel_init_kwargs": {
+             "seed": 0
+           },
+           "use_bias": false,
+           "bias": 0,
+           "activation": "swish",
+           "batch_norm": false,
+             "is_training": false,
+	     "return_input": false
+         },
+         {
+           "function": "depth_conv",
+           "use_bias": false,
+           "weight_decay": 0.00001,
+           "ksize": 3,
+           "kernel_init": "normal",
+           "kernel_init_kwargs": {
+             "seed": 0
+           },
+           "activation": "swish",
+           "batch_norm": false,
+           "is_training": false
+         },
+	   {
+	       "function": "squeeze_and_excitation",
+	       "reduced_channels": 8,
+	       "activation": "swish",
+	       "kernel_init": "normal"
+	   },
+           {
+           "function": "conv",
+           "use_bias": false,
+           "weight_decay": 0.00001,
+           "out_depth": 16,
+               "ksize": 1,
+               "kernel_init": "normal",
+           "kernel_init_kwargs": {
+             "seed": 0
+           },
+             "activation": null,
+	     "init_zero": false,
+             "batch_norm": false,
+	     "init_zero": false,
+           "is_training": false
+         }
+        ],
+       "memory": {
+         "function": "memory",
+         "memory_decay": 0,
+         "trainable": false
+       },
+       "post_memory": [
+        ]
+      },
+      {
+       "name": "conv1",
+	  "shape_from": "conv0",
+       "dtype": "float32",
+       "input_init": {
+         "function": "zeros"
+       },
+       "state_init": {
+         "function": "zeros"
+       },
+       "harbor": {
+           "function": "harbor",
+	   "channel_op": "concat"
+       },
+	  "pre_memory": [
+         {
+           "function": "component_conv",
+           "input_name": "conv0",
+           "weight_decay": 0.00001,
+           "out_depth": 96,
+           "ksize": 1,
+           "strides": [
+             1,
+             1,
+             1,
+             1
+           ],
+           "padding": "VALID",
+           "kernel_init": "normal",
+           "kernel_init_kwargs": {
+             "seed": 0
+           },
+           "use_bias": false,
+           "bias": 0,
+           "activation": "swish",
+             "batch_norm": false,
+	     "time_sep": true,
+             "is_training": false,
+	     "return_input": true
+          }
+        ],
+       "memory": {
+         "function": "memory",
+	   "shape": [128,128],
+	   "out_depth": 40
+       },
+       "post_memory": [
+         {
+           "function": "max_pool",
+           "ksize": [
+             1,
+             2,
+             2,
+             1
+           ],
+           "strides": [
+             1,
+             2,
+             2,
+             1
+           ],
+           "padding": "SAME"
+         }
+        ]
+      },
+      {
+       "name": "conv2",
+       "shape_from": "conv1",
+       "dtype": "float32",
+       "input_init": {
+         "function": "zeros"
+       },
+       "state_init": {
+         "function": "zeros"
+       },
+       "harbor": {
+           "function": "harbor",
+	   "channel_op": "concat"
+       },
+       "pre_memory": [
+         {
+           "function": "component_conv",
+           "input_name": "conv1",
+           "weight_decay": 0.00001,
+           "out_depth": 144,
+           "ksize": 1,
+           "strides": [
+             1,
+             1,
+             1,
+             1
+           ],
+           "padding": "SAME",
+           "kernel_init": "normal",
+           "kernel_init_kwargs": {
+             "seed": 0
+           },
+           "use_bias": false,
+           "bias": 0,
+           "activation": "swish",
+             "batch_norm": false,
+	     "time_sep": true,
+           "is_training": false,
+           "return_input": true
+          }
+        ],
+       "memory": {
+         "function": "memory",
+	   "shape": [64,64],
+	   "out_depth": 64
+       },
+       "post_memory": [
+         {
+           "function": "max_pool",
+           "ksize": [
+             1,
+             2,
+             2,
+             1
+           ],
+           "strides": [
+             1,
+             2,
+             2,
+             1
+           ],
+           "padding": "SAME"
+         }
+       ]
+      },
+      {
+       "name": "conv3",
+       "shape_from": "conv2",
+       "dtype": "float32",
+       "input_init": {
+         "function": "zeros"
+       },
+       "state_init": {
+         "function": "zeros"
+       },
+       "harbor": {
+           "function": "harbor",
+	   "channel_op": "concat"
+       },
+       "pre_memory": [
+         {
+           "function": "component_conv",
+           "input_name": "conv2",
+           "weight_decay": 0.00001,
+           "out_depth": 240,
+           "ksize": 1,
+           "strides": [
+             1,
+             1,
+             1,
+             1
+           ],
+           "padding": "SAME",
+           "kernel_init": "normal",
+           "kernel_init_kwargs": {
+             "seed": 0
+           },
+           "use_bias": false,
+           "bias": 0,
+           "activation": "swish",
+             "batch_norm": false,
+	     "time_sep": true,
+           "is_training": false,
+           "return_input": true
+          }
+        ],
+       "memory": {
+         "function": "memory",
+	   "shape": [32,32],
+	   "out_depth": 96
+       },
+	  "post_memory": [
+              {
+           "function": "max_pool",
+           "ksize": [
+             1,
+             2,
+             2,
+             1
+           ],
+           "strides": [
+             1,
+             2,
+             2,
+             1
+           ],
+           "padding": "SAME"
+         }
+        ]
+      },
+      {
+       "name": "conv4",
+       "shape_from": "conv3",
+       "dtype": "float32",
+       "input_init": {
+         "function": "zeros"
+       },
+       "state_init": {
+         "function": "zeros"
+       },
+       "harbor": {
+           "function": "harbor",
+	   "channel_op": "concat"
+       },
+       "pre_memory": [
+         {
+           "function": "component_conv",
+           "input_name": "conv3",
+           "weight_decay": 0.00001,
+           "out_depth": 480,
+           "ksize": 1,
+           "strides": [
+             1,
+             1,
+             1,
+             1
+           ],
+           "padding": "SAME",
+           "kernel_init": "normal",
+           "kernel_init_kwargs": {
+             "seed": 0
+           },
+           "use_bias": false,
+           "bias": 0,
+           "activation": "swish",
+             "batch_norm": false,
+	     "time_sep": true,
+           "is_training": false,
+           "return_input": true
+          }
+        ],
+       "memory": {
+         "function": "memory",
+	   "shape": [16,16],
+	   "out_depth": 128
+       },
+       "post_memory": [
+         {
+           "function": "max_pool",
+           "ksize": [
+             1,
+             2,
+             2,
+             1
+           ],
+           "strides": [
+             1,
+             2,
+             2,
+             1
+           ],
+           "padding": "SAME"
+         }
+       ]
+      },
+      {
+       "name": "conv5",
+       "shape_from": "conv4",
+       "dtype": "float32",
+       "input_init": {
+         "function": "zeros"
+       },
+       "state_init": {
+         "function": "zeros"
+       },
+       "harbor": {
+           "function": "harbor",
+	   "channel_op": "concat"
+       },
+       "pre_memory": [
+         {
+           "function": "component_conv",
+           "input_name": "conv4",
+           "weight_decay": 0.00001,
+           "out_depth": 512,
+           "ksize": 1,
+           "strides": [
+             1,
+             1,
+             1,
+             1
+           ],
+           "padding": "SAME",
+           "kernel_init": "normal",
+           "kernel_init_kwargs": {
+             "seed": 0
+           },
+           "use_bias": false,
+           "bias": 0,
+           "activation": "swish",
+             "batch_norm": false,
+	     "time_sep": true,
+           "is_training": false,
+           "return_input": true
+          }
+        ],
+       "memory": {
+         "function": "memory",
+	   "shape": [8,8],
+	   "out_depth": 192
+       },
+	  "post_memory": [
+        ]
+      },
+      {
+        "name": "scene",
+        "shape_from": "conv5",
+        "dtype": "float32",
+        "input_init": {
+          "function": "zeros"
+        },
+        "state_init": {
+          "function": "zeros"
+        },
+        "harbor": {
+            "function": "harbor",
+	    "channel_op": "concat",
+	    "spatial_op": "resize"
+        },
+          "pre_memory": [
+
+        ],
+        "memory": {
+            "function": "memory",
+            "shape": [8,8],
+            "out_depth": 256
+        },
+          "post_memory": [
+              {
+		  "function": "global_pool",
+		  "kind": "avg",
+		  "keep_dims": true
+              }
+	  ]
+      }
+    ],
+    "edges": [
+      {
+        "from": "conv0",
+        "to": "conv1"
+      },
+      {
+        "from": "conv1",
+        "to": "conv2"
+      },
+      {
+        "from": "conv2",
+        "to": "conv3"
+      },
+      {
+        "from": "conv3",
+        "to": "conv4"
+      },
+      {
+        "from": "conv4",
+        "to": "conv5"
+      },
+      {
+        "from": "conv5",
+        "to": "scene"
+      }
+    ]
+}

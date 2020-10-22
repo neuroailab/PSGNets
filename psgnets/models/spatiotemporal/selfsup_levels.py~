@@ -1,0 +1,157 @@
+import copy
+import pdb
+
+import numpy as np
+import tensorflow.compat.v1 as tf
+import vvn.ops.convolutional as convolutional
+import vvn.ops.graphical as graphical
+import vvn.ops.pooling as pooling
+import vvn.ops.vectorizing as vectorizing
+import vvn.ops.rendering as rendering
+import vvn.ops.utils as utils
+import vvn.models.losses as losses
+from vvn.ops.dimensions import DimensionDict, OrderedDict
+
+from vvn.models.levels import *
+from vvn.models.spatiotemporal.motion_levels import P3Level, EdgeFloodP3Level
+
+class P4Level(P0GlobalLevel):
+
+    def __init__(self, use_target_segments=False, vae_loss_scale=1., selfsup_loss_scale=1.,
+                 static_attrs=None, estimator_kwargs={}, **kwargs):
+
+        self.static_attrs = static_attrs
+        self.use_target_segments = use_target_segments
+        self.vae_loss_scale = vae_loss_scale
+        self.selfsup_loss_scale = selfsup_loss_scale
+        self.estimator_kwargs = copy.deepcopy(estimator_kwargs)
+        P0GlobalLevel.__init__(self, **kwargs)
+        with tf.variable_scope('motion_segment_estimator'):
+            self.motion_segment_estimator = P3Level(
+                name=self.name+'_estimator', input_name=self.input_name,
+                num_nodes=self.num_nodes, num_attrs=0, **self.estimator_kwargs)
+
+    def compute_segment_targets(self, **kwargs):
+        '''
+        Use the motion segment estimator to compute segments
+        '''
+        Est = self.motion_segment_estimator
+        Est.nodes = self.nodes
+        Est.valid_nodes = self.valid_nodes
+        Est.segment_ids = self.segment_ids
+        Est.features = self.features
+        Est.actions = self.actions
+        Est.inputDims = self.inputDims.copy(suffix='')
+        Est.size = self.size
+        Est.loss = tf.zeros_like(self.loss)
+        Est.B, Est.T, Est.BT, Est.N, Est.M = [self.B, self.T, self.BT, self.N, self.M]
+        with tf.variable_scope('motion_segment_estimator'):
+            Est.affinities = Est.compute_affinities(nodes=Est.nodes)
+            Est.edges = Est.threshold_affinities()
+            Est.parent_edges = Est.compute_parents()
+            motion_segment_ids = Est.register_parents()
+            Est.loss = tf.Print(Est.loss, [tf.reduce_mean(Est.loss), tf.reduce_max(motion_segment_ids, axis=[-2,-1])], message='est_vae_loss')
+            self.loss += Est.loss * self.vae_loss_scale
+
+        return motion_segment_ids
+
+    def compute_affinities(self, **kwargs):
+
+        ## predict affinities w mlp
+        kwargs.update(self.affinity_kwargs)
+        if self.static_attrs is None:
+            self.static_attrs = [k for k in self.inputDims.keys() if 'vector' in k][-1:]
+        stop_grad = kwargs.get('stop_gradient', False)
+        static_nodes = self.inputDims.get_tensor_from_attr_dims(self.nodes, self.static_attrs, stop_gradient=stop_grad)
+        # affinities = super(P4Level, self).compute_affinities(nodes=static_nodes, **kwargs)
+        affinities = P0GlobalLevel.compute_affinities(self, nodes=static_nodes, **kwargs)
+
+        ## compute a loss
+        self.target_segment_ids = self.compute_segment_targets()
+        start_time = self.estimator_kwargs.get('loss_start_time', 1)
+        selfsup_loss = losses.affinity_cross_entropy_from_nodes_and_segments(
+            affinities=self.reshape_batch_time(affinities, merge=False),
+            nodes=self.reshape_batch_time(self.nodes, merge=False),
+            segments=self.reshape_batch_time(self.target_segment_ids[...,tf.newaxis], merge=False),
+            dimension_dict=self.inputDims, size=self.target_segment_ids.shape.as_list()[1:3],
+            start_time=start_time, downsample_labels=False)
+        selfsup_loss = tf.concat([tf.zeros([self.B, start_time], dtype=tf.float32), selfsup_loss], axis=1)
+        selfsup_loss = tf.Print(selfsup_loss, [tf.reduce_mean(selfsup_loss)], message='selfsulp_loss')
+        self.loss += self.reshape_batch_time(selfsup_loss, merge=True) * self.selfsup_loss_scale
+
+        return affinities
+
+    def register_parents(self, **kwargs):
+        if self.use_target_segments:
+            self.parent_edges = self.motion_segment_estimator.parent_edges
+        return P0GlobalLevel.register_parents(self, **kwargs)
+
+
+class OcclusionFloodP4Level(P4Level, EdgeFloodP3Level):
+
+    def __init__(self,
+                 occlusion_kwargs={'edge_feature_dims': [0,1], 'edge_threshold': 0.8},
+                 occlusion_loss_scale=1., **kwargs):
+
+        self.occlusion_kwargs = copy.deepcopy(occlusion_kwargs)
+        self.occlusion_loss_scale = occlusion_loss_scale
+        P4Level.__init__(self, **kwargs)
+        self.estimator_kwargs.update(self.occlusion_kwargs)
+        self.edge_to_edge_affinities = None
+        self.compute_time_edges = False
+        self.use_vae = False
+        self.spacetime_cluster = False
+
+    def reshape_inputs(self, **kwargs):
+        return P4Level.reshape_inputs(self, **kwargs)
+
+    def compute_affinities(self, **kwargs):
+        return P4Level.compute_affinities(self, **kwargs)
+
+    def threshold_affinities(self, **kwargs):
+        return P4Level.threshold_affinities(self, **kwargs)
+
+    def compute_parents(self, **kwargs):
+        return P4Level.compute_parents(self, **kwargs)
+
+    def register_parents(self, **kwargs):
+        return P4Level.register_parents(self, **kwargs)
+
+    def aggregate_nodes_and_features(self, **kwargs):
+
+        ## compute edge nodes given motion
+        print("occlusion")
+        self.motion_nodes = self.nodes
+        self.edge_nodes, self.edge_segment_ids = EdgeFloodP3Level.compute_edge_nodes(self, **kwargs)
+        self.edge_to_node_affinities = EdgeFloodP3Level.compute_edge_to_node_affinities(self, **self.occlusion_kwargs)
+
+        if self.occlusion_kwargs.get('stop_affinities_gradient', False):
+            self.affinities = tf.stop_gradient(self.affinities)
+
+        print("nodes", self.nodes)
+        print("dims", self.inputDims)
+        import pdb
+        pdb.set_trace()
+        parent_nodes = EdgeFloodP3Level.aggregate_nodes_and_features(self, **kwargs)
+        print("nodes", self.nodes)
+        print("dims", self.inputDims)
+        import pdb
+        pdb.set_trace()
+        return parent_nodes
+
+    def predict_parent_attributes(self, **kwargs):
+
+        parent_attrs = P4Level.predict_parent_attributes(self, **kwargs)
+        print("parent attrs", parent_attrs)
+        import pdb
+        pdb.set_trace()
+
+        return parent_attrs
+
+    def format_output_nodes(self, **kwargs):
+
+        self.parent_nodes = P4Level.format_output_nodes(self, **kwargs)
+        print("parent Nodes", self.parent_nodes, self.Dims.ndims)
+        import pdb
+        pdb.set_trace()
+        return self.parent_nodes
