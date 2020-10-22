@@ -12,10 +12,10 @@ from absl import flags
 from absl import logging
 import tensorflow.compat.v1 as tf
 
-from vvn.data.data_utils import get_data_params
-from vvn.models.dynamics import VisualPhysicsModel, PhysicsModel
-from vvn.models.visual_encoder import vectorize_inputs_model
-from vvn.data.tdw_data import TdwSequenceDataProvider
+from psgnets.data.data_utils import get_data_params
+from psgnets.models.dynamics import VisualPhysicsModel, PhysicsModel
+from psgnets.models.visual_encoder import vectorize_inputs_model
+from psgnets.data.tdw_data import TdwSequenceDataProvider
 
 import pdb
 

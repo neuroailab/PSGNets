@@ -1,5 +1,5 @@
 import tensorflow.compat.v1 as tf
-from vvn.ops.convolutional import mlp
+from psgnets.ops.convolutional import mlp
 
 PRINT = False
 

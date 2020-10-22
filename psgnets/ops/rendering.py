@@ -1,7 +1,7 @@
 import numpy as np
 import tensorflow as tf
 
-from vvn.ops.utils import mask_tensor
+from psgnets.ops.utils import mask_tensor
 
 def read_rendering_matrix(mat, out_shape=[4,4]):
     mat_shape = mat.shape.as_list()

@@ -8,8 +8,8 @@ import numpy as np
 import tensorflow.compat.v1 as tf
 import copy
 
-import vvn.ops.utils as utils
-from vvn.models.extracting import Extractor
+import psgnets.ops.utils as utils
+from psgnets.models.extracting import Extractor
 
 import tnn.main
 import tnn.cell as cell

@@ -13,9 +13,9 @@ import tensorflow.compat.v1 as tf
 
 from tfutils import base, optimizer
 
-# from vvn.data.data_utils import get_data_params
-from vvn.data.tdw_data import TdwSequenceDataProvider
-import vvn.models.psgnet as psgnet
+# from psgnets.data.data_utils import get_data_params
+from psgnets.data.tdw_data import TdwSequenceDataProvider
+import psgnets.models.psgnet as psgnet
 from utils import collect_and_flatten
 from training_configs import DEFAULT_TFUTILS_PARAMS
 
@@ -23,7 +23,7 @@ import pdb
 
 FLAGS = flags.FLAGS
 flags.DEFINE_string(
-    "dbname", "vvn", help="Name of database to store in mongodb")
+    "dbname", "psgnets", help="Name of database to store in mongodb")
 flags.DEFINE_string(
     "collname", "psgnet", help="Name of collection to store in mongodb")
 flags.DEFINE_string(

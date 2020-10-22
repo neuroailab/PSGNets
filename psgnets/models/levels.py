@@ -4,16 +4,16 @@ import pdb
 
 import numpy as np
 import tensorflow.compat.v1 as tf
-import vvn.ops.convolutional as convolutional
-import vvn.ops.graphical as graphical
-import vvn.ops.pooling as pooling
-import vvn.ops.vectorizing as vectorizing
-import vvn.ops.rendering as rendering
-import vvn.ops.utils as utils
+import psgnets.ops.convolutional as convolutional
+import psgnets.ops.graphical as graphical
+import psgnets.ops.pooling as pooling
+import psgnets.ops.vectorizing as vectorizing
+import psgnets.ops.rendering as rendering
+import psgnets.ops.utils as utils
 from preprocessing import compute_sobel_features, preproc_rgb
-from vvn.models.gcn.model import GCN
-from vvn.ops.dimensions import DimensionDict
-from vvn.models.losses import cross_entropy
+from psgnets.models.gcn.model import GCN
+from psgnets.ops.dimensions import DimensionDict
+from psgnets.models.losses import cross_entropy
 from base import Model
 from vae import VAE
 

@@ -2,11 +2,11 @@ import tensorflow as tf
 from tensorflow.python.framework import ops
 
 import os.path as osp
-import vvn
-vvn_path = vvn.__path__[0]
-nn_distance_module=tf.load_op_library(osp.join(vvn_path, 'ops/src/tf_nndistance_so.so'))
-nn_distance_2_module=tf.load_op_library(osp.join(vvn_path, 'ops/src/tf_nndistance_2_so.so'))
-nn_distance_4_module=tf.load_op_library(osp.join(vvn_path, 'ops/src/tf_nndistance_4_so.so'))
+import psgnets
+psgnets_path = psgnets.__path__[0]
+nn_distance_module=tf.load_op_library(osp.join(psgnets_path, 'ops/src/tf_nndistance_so.so'))
+nn_distance_2_module=tf.load_op_library(osp.join(psgnets_path, 'ops/src/tf_nndistance_2_so.so'))
+nn_distance_4_module=tf.load_op_library(osp.join(psgnets_path, 'ops/src/tf_nndistance_4_so.so'))
 
 def nn_distance(xyz1,xyz2):
     '''

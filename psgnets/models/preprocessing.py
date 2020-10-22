@@ -1,8 +1,8 @@
 import tensorflow.compat.v1 as tf
 import numpy as np
 
-from vvn.ops.dimensions import DimensionDict, OrderedDict
-from vvn.data.utils import read_depths_image
+from psgnets.ops.dimensions import DimensionDict, OrderedDict
+from psgnets.data.utils import read_depths_image
 from .base import Model
 
 def preproc_rgb(img, norm=255., to_hsv=False):

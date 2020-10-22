@@ -8,8 +8,8 @@ import numpy as np
 import tensorflow as tf
 import copy
 
-from vvn.ops.dimensions import DimensionDict
-from vvn.ops import convolutional
+from psgnets.ops.dimensions import DimensionDict
+from psgnets.ops import convolutional
 from .base import Model
 
 class Extractor(Model):

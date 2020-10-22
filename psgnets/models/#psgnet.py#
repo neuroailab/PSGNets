@@ -1,5 +1,5 @@
 from __future__ import division, print_function, absolute_import
-from collections import OrderedDict
+1;95;0cfrom collections import OrderedDict
 import os
 import sys
 import pdb
@@ -12,12 +12,12 @@ import copy
 # from graph.common import Graph, propdict, graph_op, node_op, edge_op
 
 # Visual Extraction and Graph Building
-from psgnets.ops.dimensions import DimensionDict
-from psgnets.ops import convolutional
-from psgnets.ops import pooling
-from psgnets.ops import vectorizing
-from psgnets.ops import graphical
-from psgnets.ops import utils
+from vvn.ops.dimensions import DimensionDict
+from vvn.ops import convolutional
+from vvn.ops import pooling
+from vvn.ops import vectorizing
+from vvn.ops import graphical
+from vvn.ops import utils
 from .base import Model, Loss, Graph, propdict
 from .preprocessing import *
 from .extracting import *
@@ -25,11 +25,11 @@ from .levels import *
 from .decoding import *
 from .losses import *
 
-# from psgnets.models.convrnn.convrnn_model import ConvRNN
+# from vvn.models.convrnn.convrnn_model import ConvRNN
 
 ## for debugging
-from psgnets.data.tdw_data import TdwSequenceDataProvider
-from psgnets.data.utils import *
+from vvn.data.tdw_data import TdwSequenceDataProvider
+from vvn.data.utils import *
 
 class PSGNet(Model):
 

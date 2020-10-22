@@ -10,8 +10,8 @@ import skimage
 from skimage.segmentation.boundaries import find_boundaries
 from sklearn.cluster import KMeans
 
-from vvn.data.utils import read_depths_image, object_id_hash
-from vvn.ops.rendering import hw_attrs_to_image_inds
+from psgnets.data.utils import read_depths_image, object_id_hash
+from psgnets.ops.rendering import hw_attrs_to_image_inds
 from foreground_ari_metric import adjusted_rand_index
 
 PRINT = False
@@ -1018,7 +1018,7 @@ if __name__ == '__main__':
 
     BATCH_SIZE = 2
     TRAIN = False
-    from vvn.data.clevr_data import ClevrData
+    from psgnets.data.clevr_data import ClevrData
     train_data, val_data = ClevrData.get_data_params(BATCH_SIZE)
     data_provider = ClevrData(**(train_data if TRAIN else val_data))
     func = data_provider.input_fn

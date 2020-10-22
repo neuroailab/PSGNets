@@ -8,14 +8,14 @@ from collections import OrderedDict
 import os
 import sys
 
-from vvn.ops.convolutional import mlp, shared_spatial_mlp
-from vvn.ops.dimensions import DimensionDict
-from vvn.ops.utils import inversion_map, mask_tensor
+from psgnets.ops.convolutional import mlp, shared_spatial_mlp
+from psgnets.ops.dimensions import DimensionDict
+from psgnets.ops.utils import inversion_map, mask_tensor
 
 #lp = tf.load_op_library('../ops/src/tf_labelprop.so')
 #lpfc = tf.load_op_library('../ops/src/tf_labelprop_fc.so')
 #hung = tf.load_op_library('../ops/src/hungarian.so')
-import vvn.ops.tf_nndistance # chamfer/nn distances
+import psgnets.ops.tf_nndistance # chamfer/nn distances
 
 PRINT = False
 

@@ -4,8 +4,8 @@ from __future__ import print_function
 
 import tensorflow as tf
 import numpy as np
-from vvn.ops.utils import *
-from vvn.ops.dimensions import DimensionDict, OrderedDict
+from psgnets.ops.utils import *
+from psgnets.ops.dimensions import DimensionDict, OrderedDict
 
 PRINT = False
 

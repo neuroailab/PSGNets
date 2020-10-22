@@ -1,10 +1,10 @@
 import tensorflow.compat.v1 as tf
 from tfutils import optimizer
-import vvn.models as models
-import vvn.ops as ops
-import vvn.trainval.eval_metrics as eval_metrics
-from vvn.trainval.utils import collect_and_flatten, total_loss
-from vvn.data.imagenet_data import ImageNet
+import psgnets.models as models
+import psgnets.ops as ops
+import psgnets.trainval.eval_metrics as eval_metrics
+from psgnets.trainval.utils import collect_and_flatten, total_loss
+from psgnets.data.imagenet_data import ImageNet
 
 MODEL_PREFIX = 'model_0'
 CROP_SIZE = 256

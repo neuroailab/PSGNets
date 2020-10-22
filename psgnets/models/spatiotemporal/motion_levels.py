@@ -3,16 +3,16 @@ import pdb
 
 import numpy as np
 import tensorflow.compat.v1 as tf
-import vvn.ops.convolutional as convolutional
-import vvn.ops.graphical as graphical
-import vvn.ops.pooling as pooling
-import vvn.ops.vectorizing as vectorizing
-import vvn.ops.rendering as rendering
-import vvn.ops.utils as utils
-import vvn.models.losses as losses
-from vvn.ops.dimensions import DimensionDict, OrderedDict
+import psgnets.ops.convolutional as convolutional
+import psgnets.ops.graphical as graphical
+import psgnets.ops.pooling as pooling
+import psgnets.ops.vectorizing as vectorizing
+import psgnets.ops.rendering as rendering
+import psgnets.ops.utils as utils
+import psgnets.models.losses as losses
+from psgnets.ops.dimensions import DimensionDict, OrderedDict
 
-from vvn.models.levels import *
+from psgnets.models.levels import *
 
 PRINT = False
 

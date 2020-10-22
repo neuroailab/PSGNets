@@ -5,14 +5,14 @@ import tensorflow as tf
 # from graph.common import propdict
 from .base import propdict
 
-import vvn.ops.tf_nndistance as tf_nndistance
-from vvn.ops.dimensions import DimensionDict
-import vvn.ops.rendering as rendering
-import vvn.ops.graphical as graphical
-import vvn.ops.utils as utils
-from vvn.data.utils import object_id_hash
+import psgnets.ops.tf_nndistance as tf_nndistance
+from psgnets.ops.dimensions import DimensionDict
+import psgnets.ops.rendering as rendering
+import psgnets.ops.graphical as graphical
+import psgnets.ops.utils as utils
+from psgnets.data.utils import object_id_hash
 
-from vvn.models.preprocessing import preproc_rgb, preproc_depths, preproc_normals
+from psgnets.models.preprocessing import preproc_rgb, preproc_depths, preproc_normals
 
 # for debugging training
 PRINT = False

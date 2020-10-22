@@ -1,16 +1,16 @@
 from collections import OrderedDict
 import tensorflow.compat.v1 as tf
 from tfutils import optimizer
-import vvn.models as models
-from vvn.models.spatiotemporal import motion_levels, selfsup_levels
-from vvn.models.convrnn.convrnn_model import ConvRNN
-from vvn.models.decoding import QtrDecoder, DeltaImages, DEFAULT_PRED_DIMS
-import vvn.ops as ops
-from vvn.trainval.utils import collect_and_flatten, total_loss
-import vvn.trainval.eval_metrics as eval_metrics
-from vvn.data.tdw_data import TdwSequenceDataProvider
-import vvn.models.losses as losses
-from vvn.models.preprocessing import preproc_hsv, preproc_rgb, delta_images
+import psgnets.models as models
+from psgnets.models.spatiotemporal import motion_levels, selfsup_levels
+from psgnets.models.convrnn.convrnn_model import ConvRNN
+from psgnets.models.decoding import QtrDecoder, DeltaImages, DEFAULT_PRED_DIMS
+import psgnets.ops as ops
+from psgnets.trainval.utils import collect_and_flatten, total_loss
+import psgnets.trainval.eval_metrics as eval_metrics
+from psgnets.data.tdw_data import TdwSequenceDataProvider
+import psgnets.models.losses as losses
+from psgnets.models.preprocessing import preproc_hsv, preproc_rgb, delta_images
 
 gt_preproc_hsv = lambda im: preproc_rgb(im, to_hsv=True)
 def sigmoid_motion_metric(ni, nj):
@@ -63,7 +63,7 @@ PRED_MO_DIMS = OrderedDict([
 config = {
     'load_params': {
         'do_restore': True,
-        'dbname': 'vvn',
+        'dbname': 'psgnets',
         'collname': 'psgnet',
         'exp_id': 'EWP1_0dele0sob1sobfts_seq4dt1bs1_1',
         'query': {'step': 320000},

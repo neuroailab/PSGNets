@@ -10,12 +10,12 @@ import copy
 
 # from graph.common import Graph, propdict
 
-import vvn.models.losses as losses
-import vvn.ops.utils as utils
-from vvn.ops.convolutional import conv, mlp
-import vvn.ops.rendering as rendering
-import vvn.ops.shape_coding as shape_coding
-from vvn.ops.dimensions import DimensionDict, OrderedDict
+import psgnets.models.losses as losses
+import psgnets.ops.utils as utils
+from psgnets.ops.convolutional import conv, mlp
+import psgnets.ops.rendering as rendering
+import psgnets.ops.shape_coding as shape_coding
+from psgnets.ops.dimensions import DimensionDict, OrderedDict
 from .base import Model, Graph, propdict
 from .preprocessing import preproc_rgb, preproc_hsv, delta_images
 

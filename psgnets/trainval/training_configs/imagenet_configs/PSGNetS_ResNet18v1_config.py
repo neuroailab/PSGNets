@@ -2,15 +2,15 @@ from collections import OrderedDict
 import tensorflow.compat.v1 as tf
 from tfutils import optimizer
 from tfutils.defaults import mean_and_reg_loss
-import vvn.models as models
-from vvn.models.resnets.resnet_model import resnet_v1
-from vvn.models.decoding import Decoder, QtrDecoder, DEFAULT_PRED_DIMS
-import vvn.ops as ops
-from vvn.trainval.utils import collect_and_flatten, total_loss
-import vvn.trainval.eval_metrics as eval_metrics
-from vvn.data.imagenet_data import ImageNet
-import vvn.models.losses as losses
-from vvn.models.preprocessing import preproc_hsv, preproc_rgb
+import psgnets.models as models
+from psgnets.models.resnets.resnet_model import resnet_v1
+from psgnets.models.decoding import Decoder, QtrDecoder, DEFAULT_PRED_DIMS
+import psgnets.ops as ops
+from psgnets.trainval.utils import collect_and_flatten, total_loss
+import psgnets.trainval.eval_metrics as eval_metrics
+from psgnets.data.imagenet_data import ImageNet
+import psgnets.models.losses as losses
+from psgnets.models.preprocessing import preproc_hsv, preproc_rgb
 
 MODEL_PREFIX = 'model_0'
 POSTFIX = ''

@@ -11,7 +11,7 @@ import tensorflow.compat.v1 as tf
 from absl import logging
 
 from tfutils.db_interface import DBInterface
-from vvn.trainval.training_configs import DEFAULT_TFUTILS_PARAMS
+from psgnets.trainval.training_configs import DEFAULT_TFUTILS_PARAMS
 
 
 def collect_and_flatten(inputs, outputs, targets, **kwargs):

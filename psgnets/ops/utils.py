@@ -4,7 +4,7 @@ from __future__ import print_function
 
 import tensorflow as tf
 import numpy as np
-from vvn.ops.dimensions import DimensionDict
+from psgnets.ops.dimensions import DimensionDict
 
 hung = tf.load_op_library('../ops/src/hungarian.so')
 

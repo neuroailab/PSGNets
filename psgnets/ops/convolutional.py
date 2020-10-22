@@ -5,10 +5,10 @@ from __future__ import print_function
 import tensorflow.compat.v1 as tf
 import numpy as np
 
-from vvn.ops.dimensions import DimensionDict
-from vvn.data.utils import * # lots of stuff for reading data
-from vvn.ops.rendering import hw_to_xy
-from vvn.ops.utils import *
+from psgnets.ops.dimensions import DimensionDict
+from psgnets.data.utils import * # lots of stuff for reading data
+from psgnets.ops.rendering import hw_to_xy
+from psgnets.ops.utils import *
 
 def convnet_stem(
         images, train, ksize,

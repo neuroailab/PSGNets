@@ -12,7 +12,7 @@ except:
 
 from .base import DataProvider
 from .utils import *
-from vvn.models.preprocessing import delta_images, delta_rgb
+from psgnets.models.preprocessing import delta_images, delta_rgb
 
 NEAR = 0.01
 FAR = 160.
