@@ -1,8 +1,8 @@
 *.egg
 *.egg-info
 *.pyc
-vvn/#*
-vvn/*.pyc
+psgnets/#*
+psgnets/*.pyc
 *env
 *.*~
 *.py.swp
@@ -13,6 +13,3 @@ build/*
 .vscode
 results/
 notebooks/*
-vvn/models/grnn/MNIST*
-vvn/notebooks/cfan/*.pkl
-vvn/data/mcs/SCENE_HISTORY/*

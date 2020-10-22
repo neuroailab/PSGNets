@@ -1,5 +1,5 @@
-# VisualVectorizingNetwork
-1;95;0cModels for converting image-like inputs into hierarchical graph-like scene representations
+# PSGNets
+Models for converting image-like inputs into hierarchical graph-like scene representations
 
 Installation Instructions:
 
