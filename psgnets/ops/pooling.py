@@ -15,7 +15,6 @@ from .graphical import *
 
 lp = tf.load_op_library('../ops/src/tf_labelprop.so')
 lpfc = tf.load_op_library('../ops/src/tf_labelprop_fc.so')
-hung = tf.load_op_library('../ops/src/hungarian.so')
 from .tf_nndistance import * # chamfer/nn distances
 
 PRINT = False

@@ -6,8 +6,6 @@ import tensorflow as tf
 import numpy as np
 from psgnets.ops.dimensions import DimensionDict
 
-hung = tf.load_op_library('../ops/src/hungarian.so')
-
 def initializer(kind='xavier', *args, **kwargs):
     if kind == 'xavier':
         init = tf.contrib.layers.xavier_initializer(*args, **kwargs)
@@ -411,85 +409,3 @@ def permute_nodes(nodes, assignment):
     inds = tf.concat([b_inds, n_inds], axis=-1)
     pnodes = tf.gather_nd(nodes, inds)
     return pnodes
-
-def hungarian_node_matching(nodes1, nodes2, dims_list=[[0,9]], cost_func=l2_cost, preproc_list=None, dim_weights=None, max_cost=10000.0, **kwargs):
-
-    nodes1_valid = nodes1[...,-1]
-    nodes2_valid = nodes2[...,-1]
-
-    # get preprocs and dim weights
-    if preproc_list is None:
-        preproc_list = [tf.identity] * len(dims_list)
-    assert len(preproc_list) == len(dims_list), "must pass one preproc per dim set"
-
-    ndims = sum([d[1] - d[0] for d in dims_list])
-    if dim_weights is None:
-        dim_weights = tf.ones(shape=[1,1,ndims], dtype=tf.float32)
-    else:
-        assert len(dim_weights) == ndims, (len(dim_weights), ndims, dims_list)
-        dim_weights = tf.reshape(tf.constant(dim_weights, dtype=tf.float32), [1,1,ndims])
-
-    # get node dims that should be matched, preproc, and weight the output
-    nodes1 = dim_weights * tf.concat([preproc_list[i](nodes1[...,d[0]:d[1]]) for i,d in enumerate(dims_list)], axis=-1)
-    nodes2 = dim_weights * tf.concat([preproc_list[i](nodes2[...,d[0]:d[1]]) for i,d in enumerate(dims_list)], axis=-1)
-
-    # set values of [B,N,N] cost matrix as weighted L2 distance
-    cost_matrix = cost_func(nodes1, nodes2, **kwargs.get('cost_func_kwargs', {}))
-    # cost_matrix = tf.reduce_sum(tf.square(tf.expand_dims(nodes1, 2) - tf.expand_dims(nodes2, 1)), -1, keepdims=False)
-
-    # edges between two invalid nodes have 0.0 cost
-    val_val = nodes1_valid[...,tf.newaxis] * nodes2_valid[:,tf.newaxis,:]
-    cost_matrix = mask_tensor(cost_matrix, val_val, mask_value=0.0)
-
-    # edges between a valid and invalid node have "infinite" cost
-    val_inv = nodes1_valid[...,tf.newaxis] * (1.0 - nodes2_valid[:,tf.newaxis,:]) +\
-              (1.0 - nodes1_valid[...,tf.newaxis]) * nodes2_valid[:,tf.newaxis,:]
-    val_inv = tf.minimum(val_inv, 1.0)
-    cost_matrix = mask_tensor(cost_matrix, 1.0 - val_inv, mask_value=max_cost)
-    assignment = hung.hungarian(cost_matrix)
-
-    return assignment
-
-def matching_cost(nodes1, nodes2, dims_list=[[0,9]], cost_func=l2_cost, preproc_list=None, dim_weights=None, **kwargs):
-    if preproc_list is None:
-        preproc_list = [tf.identity] * len(dims_list)
-    assert len(preproc_list) == len(dims_list)
-
-    ndims = sum([d[1] - d[0] for d in dims_list])
-    if dim_weights is None:
-        dim_weights = tf.ones(shape=[1,1,ndims], dtype=tf.float32)
-    else:
-        assert len(dim_weights) == ndims, (len(dim_weights), ndims, dims_list)
-        dim_weights = tf.reshape(tf.constant(dim_weights, dtype=tf.float32), [1,1,ndims])
-
-    # get node dims that should be matched, preproc, and weight the output
-    nodes1 = dim_weights * tf.concat([preproc_list[i](nodes1[...,d[0]:d[1]]) for i,d in enumerate(dims_list)], axis=-1)
-    nodes2 = dim_weights * tf.concat([preproc_list[i](nodes2[...,d[0]:d[1]]) for i,d in enumerate(dims_list)], axis=-1)
-
-    l2_cost = tf.reduce_sum(tf.square(nodes1 - nodes2), axis=-1, keepdims=True) # [B,N,1]
-    return l2_cost
-
-if __name__ == '__main__':
-
-    B,N,D = [4,12,8]
-    M = 10
-    # nodes_pred = tf.random.normal([B,N,D], dtype=tf.float32)
-    # nodes_gt = tf.random.normal([B,M,D], dtype=tf.float32)
-
-    # nodes_pred = tf.concat([nodes_pred, tf.ones_like(nodes_pred[...,-1:])], -1)
-    # nodes_gt = tf.concat([nodes_gt, tf.ones_like(nodes_gt[...,-1:])], -1)
-    # ass = hungarian_node_matching(nodes_pred, nodes_gt, dims_list=[[0,4]])
-    pred = tf.nn.sigmoid(tf.random.normal([B,512,16], dtype=tf.float32) * 10.)
-    gt = tf.random.uniform(shape=[B,512], minval=0, maxval=8, dtype=tf.int32)
-    gt = tf.cast(tf.one_hot(gt, depth=8, axis=-1), tf.float32)
-
-
-    dice = dice_cost(pred, gt)
-    ass = hung.hungarian(tf.transpose(dice, [0,2,1]))
-
-    print(ass)
-
-    import os
-    os.environ['CUDA_VISIBLE_DEVICES'] = ''
-    sess = tf.Session()
-    print(sess.run(ass))

@@ -89,6 +89,7 @@ setup(
         'pymongo',
         'tensorflow==1.15',
         'tfutils @ git+https://github.com/neuroailab/tfutils.git@e2e#egg=tfutils',
+        'networkx==1.11',
         'tnn @ git+https://github.com/neuroailab/tnn.git@dict_outputs#egg=tnn',
         'future'
     ],
