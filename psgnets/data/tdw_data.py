@@ -1,5 +1,5 @@
 import numpy as np
-import json
+1;95;0cimport json
 import tensorflow.compat.v1 as tf
 import os
 try:
@@ -48,6 +48,7 @@ class TdwSequenceDataProvider(DataProvider):
     This data provider supports data filtering
     This data provider uses new dataset interface in tensorflow
     '''
+    ## change this to wherever you store tdw tfrecords
     DATA_PATH = "/data4/dbear/tdw_datasets"
     def __init__(
             self,

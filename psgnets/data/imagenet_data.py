@@ -23,7 +23,7 @@ import pdb
 from .base import DataProvider
 from .utils import *
 
-# IMAGENET_DIR = '/data5/chengxuz/Dataset/TFRecord_Imagenet_standard/image_label_full'
+## change this to wherever you're storing imagenet tfrecords
 IMAGENET_DIR = '/mnt/fs1/Dataset/TFRecord_Imagenet_standard/image_label_full'
 
 def _at_least_x_are_equal(a, b, x):
