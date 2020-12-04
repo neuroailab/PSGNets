@@ -9,7 +9,7 @@ Installation Instructions:
     virtualenv env -p python
     source env/bin/activate
     ```
-1. Clone and install the `vvn` package:
+1. Clone and install the `psgnets` package:
     ```
     git clone git@github.com:neuroailab/PSGNets.git
     cd PSGNets && pip install -e .

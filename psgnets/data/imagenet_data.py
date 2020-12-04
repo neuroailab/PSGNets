@@ -20,11 +20,11 @@ import os, sys, copy
 import numpy as np
 import pdb
 
-from .base import DataProvider
-from .utils import *
+from psgnets.data.base import DataProvider
+from psgnets.data.utils import *
 
 ## change this to wherever you're storing imagenet tfrecords
-IMAGENET_DIR = '/mnt/fs1/Dataset/TFRecord_Imagenet_standard/image_label_full'
+IMAGENET_DIR = os.path.expanduser("~/PSGNets/datasets/imagenet/sample")
 
 def _at_least_x_are_equal(a, b, x):
     """At least `x` of `a` and `b` `Tensors` are equal."""
@@ -81,17 +81,6 @@ class ImageNet(DataProvider):
         data_params['data_paths'] = dataprefix
         data_params['temporal'] = (sequence_len is not None)
         return copy.deepcopy(data_params), copy.deepcopy(data_params)
-
-    # def get_tfr_filenames(self):
-    #     """
-    #     Get list of tfrecord filenames
-    #     for given folder_name fitting the given file_pattern
-    #     """
-    #     assert self.file_pattern, "Please specify file pattern!"
-    #     tfrecord_pattern = os.path.join(folder_name, self.file_pattern)
-    #     datasource = tf.gfile.Glob(tfrecord_pattern)
-    #     datasource.sort()
-    #     return np.asarray(datasource)
 
     def get_resize_scale(self, height, width):
         """

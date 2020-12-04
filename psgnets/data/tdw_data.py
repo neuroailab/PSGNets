@@ -1,5 +1,5 @@
 import numpy as np
-1;95;0cimport json
+import json
 import tensorflow.compat.v1 as tf
 import os
 try:
@@ -10,8 +10,8 @@ except:
     import sys
     import copy
 
-from .base import DataProvider
-from .utils import *
+from psgnets.data.base import DataProvider
+from psgnets.data.utils import *
 from psgnets.models.preprocessing import delta_images, delta_rgb
 
 NEAR = 0.01
@@ -49,7 +49,7 @@ class TdwSequenceDataProvider(DataProvider):
     This data provider uses new dataset interface in tensorflow
     '''
     ## change this to wherever you store tdw tfrecords
-    DATA_PATH = "/data4/dbear/tdw_datasets"
+    DATA_PATH = os.path.expanduser("~/PSGNets/datasets/tdw/")
     def __init__(
             self,
             data_paths,
@@ -600,19 +600,14 @@ if __name__ == '__main__':
 
     import os
     os.environ['CUDA_VISIBLE_DEVICES'] = ''
-    # DATAPATH = '/mnt/fs1/datasets/'
-    # DATASETS = ['ball_hits_tower_random_experiment', 'ball_hits_primitive_experiment']
 
-    # DATAPATH = '/mnt/fs4/cfan/tdw-agents/data/'
-    # DATASETS = ['sphere_static']
-
-    DATAPATH = '/data4/dbear/tdw_datasets/'
-    DATASETS = ['playroom_v1']
+    DATAPATH = TdwSequenceDataProvider.DATA_PATH
+    DATASETS = ['sample']
 
     SOURCES = ['images', 'depths', 'normals', 'objects', 'projection_matrix', 'camera_matrix', 'reference_ids']
     BATCH_SIZE = 3
     SEQUENCE_LENGTH = 4
-    TRAIN = False
+    TRAIN = True
     NUM_STEPS = 1
     DT = 1
 
@@ -630,7 +625,7 @@ if __name__ == '__main__':
         ['is_moving', 'is_object_in_view', 'is_acting']
     )
 
-    file_pattern = "trial-001*.tfrecords"
+    file_pattern = "trial-*.tfrecords"
 
     data_provider = TdwSequenceDataProvider(
         data_paths=data_paths,
@@ -658,13 +653,7 @@ if __name__ == '__main__':
                 print("tensor shape: %s\n" % tensor.shape.as_list())
                 print("=================================\n")
 
-    sess = tf.Session()
-    outdata = sess.run({k:v for k,v in inputs.items() if '_mask' not in k})
-    for k,data in outdata.items():
-        print(k, data.shape, data.dtype)
-
-    with open('/home/dbear/new_tdw_tfrdata.pkl', 'wb') as f:
-        cPickle.dump(outdata, f, protocol=-1)
-
-    # print(segs.shape)
-    # print([[(i,t,np.unique(segs[i][t])) for t in range(SEQUENCE_LENGTH)] for i in range(BATCH_SIZE)])
+    # sess = tf.Session()
+    # outdata = sess.run({k:v for k,v in inputs.items() if '_mask' not in k})
+    # for k,data in outdata.items():
+    #     print(k, data.shape, data.dtype)
