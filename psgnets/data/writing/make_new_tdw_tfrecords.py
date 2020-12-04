@@ -13,8 +13,8 @@ import _pickle as cPickle
 from tqdm import trange, tqdm
 from multiprocessing import Pool
 from joblib import Parallel, delayed
-from tdwflextools.postprocess.deprecated import tfrecords_utils as utils
-from tdwflextools.postprocess.deprecated.tfrecords_utils import Attribute
+from psgnets.data.writing import tfrecords_utils as utils
+from psgnets.data.writing.tfrecords_utils import Attribute
 from scipy import signal
 import argparse
 
@@ -95,7 +95,7 @@ ATTRIBUTES = [
     Attribute('is_acting', (1,), tf.float32),
     Attribute('is_object_in_view', (MAX_N_DYNAMIC_OBJECTS,), tf.int32),
     Attribute('object_ids', (MAX_N_DYNAMIC_OBJECTS,), tf.int32),
-    Attribute('reference_ids', (2,), tf.int32),    
+    Attribute('reference_ids', (2,), tf.int32),
     Attribute('camera_matrix', (4,4), tf.float32),
     Attribute('projection_matrix', (4,4), tf.float32),
 ]
@@ -109,7 +109,7 @@ if WITH_IMAGES:
 
 if USE_FLOW:
     ATTRIBUTES.extend([
-        Attribute('flows' + POSTFIX, (HEIGHT, WIDTH, 3), tf.uint8), 
+        Attribute('flows' + POSTFIX, (HEIGHT, WIDTH, 3), tf.uint8),
         ])
 
 if IS_DEBUG:
@@ -134,7 +134,7 @@ def get_camera_matrix(hf):
     return np.reshape(np.array(hf['static']['camera_matrix']), [4,4]).astype(np.float32)
 
 def get_projection_matrix(hf):
-    return np.reshape(np.array(hf['static']['projection_matrix']), [4,4]).astype(np.float32)    
+    return np.reshape(np.array(hf['static']['projection_matrix']), [4,4]).astype(np.float32)
 
 def get_subset_indicators(actions, batch_number=1):
     '''returns num_frames x 4 np array
@@ -157,7 +157,7 @@ def get_subset_indicators(actions, batch_number=1):
         is_not_teleporting.append(np.array([not_tele_now]).astype(np.float32))
         is_acting.append(np.array([acting_now]).astype(np.float32))
 
-    # first 10 frames and last frame are not to be used as well as 
+    # first 10 frames and last frame are not to be used as well as
     # one frame before and one frame after a teleport
     def get_is_moving(safety_distance=1, do_not_use_first_frames = False):
         is_moving = np.squeeze(copy.deepcopy(np.array(is_not_teleporting)))
@@ -180,7 +180,7 @@ def get_subset_indicators(actions, batch_number=1):
 
     return {'is_not_waiting' : is_not_waiting,
             'is_acting' : is_acting,
-            'is_not_teleporting' : is_not_teleporting, 
+            'is_not_teleporting' : is_not_teleporting,
             'is_moving': is_moving,
             'is_moving2': is_moving2,
             'is_moving3': is_moving3}
@@ -260,27 +260,27 @@ def get_batch_data(file_num_and_bn, with_images = True):
 
     to_ret = {
             'num_particles': num_particles,
-            'actions' : actions, 
-            'object_data': object_data, 
-            'agent_data': agent_data, 
-            'reference_ids': reference_ids, 
-            'is_object_there': is_object_there, 
-            'is_object_in_view': is_object_in_view, 
-            'particles': orig_particles, 
-            'max_coordinates': max_coordinates, 
-            'min_coordinates': min_coordinates, 
-            'full_particles': full_particles, 
-            'full_particles_agent': full_particles_agent, 
-            'kNN': kNN, 
-            'collision': collision, 
+            'actions' : actions,
+            'object_data': object_data,
+            'agent_data': agent_data,
+            'reference_ids': reference_ids,
+            'is_object_there': is_object_there,
+            'is_object_in_view': is_object_in_view,
+            'particles': orig_particles,
+            'max_coordinates': max_coordinates,
+            'min_coordinates': min_coordinates,
+            'full_particles': full_particles,
+            'full_particles_agent': full_particles_agent,
+            'kNN': kNN,
+            'collision': collision,
             'good_examples': good_examples,
             'is_not_acting_first_in_view_moving': inafivm,
-            'is_colliding_static': is_colliding_static, 
-            'is_colliding_dynamic': is_colliding_dynamic, 
-            'gravity': gravity, 
-            'self_collision': self_collision, 
-            'static_collision': static_collision, 
-            'is_settled': is_settled, 
+            'is_colliding_static': is_colliding_static,
+            'is_colliding_dynamic': is_colliding_dynamic,
+            'gravity': gravity,
+            'self_collision': self_collision,
+            'static_collision': static_collision,
+            'is_settled': is_settled,
             'stiffness': stiffness,
             'materials': materials,
             'segmentation_color': segmentation_color,
@@ -291,8 +291,8 @@ def get_batch_data(file_num_and_bn, with_images = True):
     if with_images:
         to_ret.update({
             'images' + POSTFIX: images,
-            'objects' + POSTFIX: objects, 
-            'depths' + POSTFIX: depths, 
+            'objects' + POSTFIX: objects,
+            'depths' + POSTFIX: depths,
             'normals' + POSTFIX: normals,
             })
         if USE_FLOW:
@@ -324,15 +324,15 @@ def get_batch_data(file_num_and_bn, with_images = True):
 def write_in_thread(file_num, batches, write_path, prefix):
     if prefix is None:
         prefix = file_num
-    # Open writers 
-    output_files = [os.path.join(write_path, attr_name, 
+    # Open writers
+    output_files = [os.path.join(write_path, attr_name,
         str(prefix) + '-' + str(batches[0]) + '-' + str(batches[-1]) \
                 + '.tfrecords') for attr_name in ATTRIBUTE_NAMES]
     if KEEP_EXISTING_FILES:
         for i, output_file in enumerate(output_files):
             if os.path.isfile(output_file):
                 print('Skipping file %s' % output_file)
-                return 
+                return
     writers = dict((attr_name, tf.python_io.TFRecordWriter(file_name)) \
             for (attr_name, file_name) in zip(ATTRIBUTE_NAMES, output_files))
 
@@ -365,7 +365,7 @@ def build_writers(filename, write_path, prefix):
             write_path, attr_name,\
             str(prefix) + '-' + filename + '.tfrecords')
         for attr_name in ATTRIBUTE_NAMES]
-    
+
     for i, output_file in enumerate(output_files):
         if os.path.isfile(output_file):
             if KEEP_EXISTING_FILES:
@@ -373,12 +373,12 @@ def build_writers(filename, write_path, prefix):
                 return None
             else:
                 os.remove(output_file)
-            
+
     writers = {
         attr_name: tf.io.TFRecordWriter(file_name)
         for (attr_name, file_name) in zip(ATTRIBUTE_NAMES, output_files)
     }
-    
+
     return writers, output_files
 
 def get_static_data(hfile, key, shape):
@@ -462,12 +462,12 @@ def write_data(writer, attr_name, attr_data, batch_size=BATCH_SIZE):
         except:
             writer.close()
             return 1
-    
+
     writer.close()
     end = time.time()
     # print("write time: {:2f}".format(end-start))
     return 0
-    
+
 def do_write(all_images = True):
     if not os.path.exists(OUT_DIR):
         os.mkdir(OUT_DIR)
@@ -509,7 +509,7 @@ def do_write(all_images = True):
 
     # write only in one group at a time
     for g, file_group in enumerate(groups):
-        # create batch tasks        
+        # create batch tasks
         write_tasks = []
 
         # hdf5 files in this group
@@ -523,7 +523,7 @@ def do_write(all_images = True):
 
             # train or val
             # if my_rng.rand() > 0.1:
-            if my_rng.rand() > 0.0:                
+            if my_rng.rand() > 0.0:
                 write_path = NEW_TFRECORD_TRAIN_PATH
             else:
                 write_path = NEW_TFRECORD_VAL_PATH
@@ -556,7 +556,7 @@ def do_write(all_images = True):
                     for of in output_files:
                         os.remove(of)
                     break
-                    
+
             # close infile
             hf.close()
 
