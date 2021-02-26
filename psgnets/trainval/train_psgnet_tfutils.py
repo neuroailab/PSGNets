@@ -18,6 +18,7 @@ from psgnets.data.tdw_data import TdwSequenceDataProvider
 import psgnets.models.psgnet as psgnet
 from utils import collect_and_flatten
 from training_configs import DEFAULT_TFUTILS_PARAMS
+from psgnets.trainval.tf_train import TrainFramework
 
 import pdb
 
@@ -38,6 +39,8 @@ flags.DEFINE_string(
     "load_config_path", None, help="Path to the config for a VVN model")
 flags.DEFINE_integer(
     "batch_size", 1, help="batch size for model")
+flags.DEFINE_integer(
+    "val_batch_size", 1, help="validation batch size for model")
 flags.DEFINE_integer(
     "sequence_length", 1, help="movie sequence length for model")
 flags.DEFINE_string(
@@ -72,11 +75,12 @@ flags.DEFINE_string(
     "save_dir", None, help="where to save a pickle of the tfutils_params")
 flags.DEFINE_string(
     "save_tensors", None, help="comma-separated list of which tensors to save in gfs")
+flags.DEFINE_bool(
+    "tfutils", True, help="whether to use tfutils")
 
 
 flags.mark_flag_as_required("exp_id")
 flags.mark_flag_as_required("config_path")
-flags.mark_flag_as_required("gpus")
 
 def load_config(config_path):
     config_path = os.path.abspath(config_path)
@@ -117,7 +121,7 @@ def build_trainval_params(config, loss_names=[]):
         **data_params)
 
     train_data_params.update({'func': _data_input_fn_wrapper, 'batch_size': FLAGS.batch_size, 'train': True})
-    val_data_params.update({'func': _data_input_fn_wrapper, 'batch_size': FLAGS.batch_size, 'train': False if not FLAGS.trainval else True})
+    val_data_params.update({'func': _data_input_fn_wrapper, 'batch_size': FLAGS.val_batch_size, 'train': False if not FLAGS.trainval else True})
 
     train_params_targets = {
         'func': collect_and_flatten,
@@ -132,8 +136,9 @@ def build_trainval_params(config, loss_names=[]):
     val_params = config.get('validation_params', {})
     for val_key, val_dict in val_params.items():
         val_dict.update({
-            'data_params': val_data_params if not FLAGS.trainval else train_data_params,
-            'num_steps': val_params[val_key].get('val_length', 50000) // (FLAGS.batch_size * FLAGS.sequence_length)
+            'data_params': val_data_params,
+            'num_steps': val_params[val_key].get('val_length', 50000) // \
+                (FLAGS.val_batch_size * FLAGS.sequence_length)
         })
 
     return train_params, val_params
@@ -205,7 +210,7 @@ def train(config, dbname, collname, exp_id, port, gpus=[0], use_default=True, lo
     }
     update_tfutils_params('save', tfutils_params, save_params, config)
 
-    if 'load_params' not in config.keys() or (FLAGS.load_exp_id is not None):
+    if 'load_params' not in config.keys():
         load_params = copy.deepcopy(save_params)
         load_params.pop('exp_id')
         load_exp_id = FLAGS.load_exp_id if load else None
@@ -229,10 +234,26 @@ def train(config, dbname, collname, exp_id, port, gpus=[0], use_default=True, lo
         raise ValueError("It looks like you're trying to load from an experiment specified in the config, but you need to set '--load 1'")
 
     ### SAVE OUT CONFIG ###
-    save_config(tfutils_params, save_dir=FLAGS.save_dir)
+    cache_dir = os.path.join(FLAGS.save_dir, FLAGS.dbname, FLAGS.collname, FLAGS.exp_id)
+    #os.system('mkdir -p %s' % cache_dir)
+    #save_config(tfutils_params, save_dir=cache_dir)
 
     logging.info(pprint.pformat(tfutils_params))
-    base.train_from_params(**tfutils_params)
+    if FLAGS.tfutils:
+        base.train_from_params(**tfutils_params)
+    else:
+        def mean_and_reg_loss(loss):
+            loss = tf.reduce_mean(loss)
+            #reg_losses = tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES)
+            #l2_loss = tf.add_n(reg_losses)
+            #loss += l2_loss
+            return loss
+        tfutils_params['loss_params']['agg_func'] = mean_and_reg_loss
+        tfutils_params['save_params']['cache_dir'] = cache_dir
+        tf_train = TrainFramework(**tfutils_params)
+        tf_train.val_only = not FLAGS.train
+        tf_train.profile = FLAGS.profile
+        tf_train.train()
 
 def test(config, dbname, collname, load_exp_id, port, gpus=[0], suffix='_val0', use_default=True):
 
@@ -256,8 +277,6 @@ def test(config, dbname, collname, load_exp_id, port, gpus=[0], suffix='_val0', 
 
     ### INPUT DATA ###
     _, val_params = build_trainval_params(config, loss_names=[])
-    for k in val_params.keys():
-        val_params[k]['data_params']['train'] = False
     update_tfutils_params('validation', val_tfutils_params, val_params, config={})
 
     ### LOAD AND SAVE ###
@@ -294,19 +313,22 @@ def test(config, dbname, collname, load_exp_id, port, gpus=[0], suffix='_val0', 
     base.test_from_params(**val_tfutils_params)
 
 def main(argv):
-    os.environ['CUDA_VISIBLE_DEVICES'] = FLAGS.gpus
+    gpus = []
+    if FLAGS.gpus:
+        gpus = FLAGS.gpus.split(',')
+        os.environ['CUDA_VISIBLE_DEVICES'] = FLAGS.gpus
+    else:
+        os.environ['CUDA_VISIBLE_DEVICES'] = ""
     tf.logging.set_verbosity(tf.logging.ERROR)
     config = load_config(FLAGS.config_path)
-    gpus = FLAGS.gpus.split(',')
-    if FLAGS.train:
-        train(config, FLAGS.dbname, FLAGS.collname, FLAGS.exp_id, FLAGS.port,
-              gpus=gpus, use_default=FLAGS.use_default_params, load=FLAGS.load)
-    else:
-        assert FLAGS.load_exp_id is not None, "Must load from a named experiment passed to --load_exp_id"
-        suffix = ('_val_' if not FLAGS.trainval else '_trainval_') + FLAGS.exp_id
-        logging.info("Saving test results under the exp_id: %s" % FLAGS.load_exp_id + suffix)
-        test(config, FLAGS.dbname, FLAGS.collname, FLAGS.load_exp_id, FLAGS.port,
-             gpus=gpus, suffix=suffix, use_default=FLAGS.use_default_params)
+    train(config, FLAGS.dbname, FLAGS.collname, FLAGS.exp_id, FLAGS.port,
+          gpus=gpus, use_default=FLAGS.use_default_params, load=FLAGS.load)
+    #else:
+    #    assert FLAGS.load_exp_id is not None, "Must load from a named experiment passed to --load_exp_id"
+    #    suffix = ('_val_' if not FLAGS.trainval else '_trainval_') + FLAGS.exp_id
+    #    logging.info("Saving test results under the exp_id: %s" % FLAGS.load_exp_id + suffix)
+    #    test(config, FLAGS.dbname, FLAGS.collname, FLAGS.load_exp_id, FLAGS.port,
+    #         gpus=gpus, suffix=suffix, use_default=FLAGS.use_default_params)
 
 if __name__ == '__main__':
     app.run(main)
